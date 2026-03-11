@@ -1,4 +1,4 @@
-# peersky-browser-extensions
+# peersky-chrome-extensions
 
 > Chrome extension API support for Electron, built for Peersky.
 
@@ -9,7 +9,7 @@ This library aims to bring extension support in Electron up to the level you'd c
 ## Install
 
 ```
-npm install peersky-browser-extensions
+npm install peersky-chrome-extensions
 ```
 
 ## Screenshots
@@ -26,7 +26,7 @@ Simple browser using Electron's [default session](https://www.electronjs.org/doc
 
 ```js
 const { app, BrowserWindow } = require('electron')
-const { ElectronChromeExtensions } = require('peersky-browser-extensions')
+const { ElectronChromeExtensions } = require('peersky-chrome-extensions')
 
 app.whenReady().then(() => {
   const extensions = new ElectronChromeExtensions()
@@ -48,7 +48,7 @@ Multi-tab browser with full support for Chrome extension APIs.
 
 ```js
 const { app, session, BrowserWindow } = require('electron')
-const { ElectronChromeExtensions } = require('peersky-browser-extensions')
+const { ElectronChromeExtensions } = require('peersky-chrome-extensions')
 
 app.whenReady().then(() => {
   const browserSession = session.fromPartition('persist:custom')
@@ -100,7 +100,7 @@ This module uses a [preload script](https://www.electronjs.org/docs/latest/tutor
 When packaging your application, it's required that the preload script is included. This can be
 handled in two ways:
 
-1. Include `node_modules` in your packaged app. This allows `peersky-browser-extensions/preload` to
+1. Include `node_modules` in your packaged app. This allows `peersky-chrome-extensions/preload` to
    be resolved.
 2. In the case of using JavaScript bundlers, you may need to copy the preload script next to your
    app's entry point script. You can try using
@@ -116,7 +116,7 @@ module.exports = {
   entry: './index.js',
   plugins: [
     new CopyWebpackPlugin({
-      patterns: [require.resolve('peersky-browser-extensions/preload')],
+      patterns: [require.resolve('peersky-chrome-extensions/preload')],
     }),
   ],
 }
@@ -257,7 +257,7 @@ To enable the element on a webpage, you must define a preload script which injec
 Inject the browserAction API to make the `<browser-action-list>` element accessible in your application.
 
 ```js
-import { injectBrowserAction } from 'peersky-browser-extensions/browser-action'
+import { injectBrowserAction } from 'peersky-chrome-extensions/browser-action'
 
 // Inject <browser-action-list> element into our page
 if (location.href === 'webui://browser-chrome.html') {
@@ -293,7 +293,7 @@ where it's intended to be displayed.
 
 ```js
 import { app, session } from 'electron'
-import { ElectronChromeExtensions } from 'peersky-browser-extensions'
+import { ElectronChromeExtensions } from 'peersky-chrome-extensions'
 
 app.whenReady().then(() => {
   // Provide the session where your app will display <browser-action-list>
@@ -482,7 +482,7 @@ See [Electron's Notification tutorial](https://www.electronjs.org/docs/tutorial/
 
 ## Limitations
 
-### peersky-browser-extensions
+### peersky-chrome-extensions
 
 - The latest version of Electron is recommended. Minimum support requires Electron v35.0.0-beta.8.
 - All background scripts are persistent.
