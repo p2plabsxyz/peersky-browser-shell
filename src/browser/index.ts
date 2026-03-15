@@ -13,6 +13,7 @@ import { ExtensionStore } from './store'
 import { StorageSyncAPI } from './api/storage-sync'
 import { IdentityAPI } from './api/identity'
 import { ContextMenusAPI } from './api/context-menus'
+import { ManagementAPI } from './api/management'
 import { RuntimeAPI } from './api/runtime'
 import { CookiesAPI } from './api/cookies'
 import { NotificationsAPI } from './api/notifications'
@@ -126,6 +127,7 @@ export class ElectronChromeExtensions extends EventEmitter {
   private api: {
     browserAction: BrowserActionAPI
     contextMenus: ContextMenusAPI
+    management: ManagementAPI
     commands: CommandsAPI
     cookies: CookiesAPI
     debugger: DebuggerAPI
@@ -166,6 +168,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     this.api = {
       browserAction: new BrowserActionAPI(this.ctx),
       contextMenus: new ContextMenusAPI(this.ctx),
+      management: new ManagementAPI(this.ctx),
       commands: new CommandsAPI(this.ctx),
       cookies: new CookiesAPI(this.ctx),
       debugger: new DebuggerAPI(this.ctx),

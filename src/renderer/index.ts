@@ -463,6 +463,15 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      management: {
+        factory: (base) => ({
+          ...base,
+          getSelf: invokeExtension('management.getSelf'),
+          getAll: invokeExtension('management.getAll'),
+          get: invokeExtension('management.get'),
+        }),
+      },
+
       i18n: {
         shouldInject: () => manifest.manifest_version === 3,
         factory: (base) => {
