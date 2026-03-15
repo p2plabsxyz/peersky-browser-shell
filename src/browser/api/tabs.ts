@@ -40,6 +40,7 @@ export class TabsAPI {
     handle('tabs.remove', this.remove.bind(this))
     handle('tabs.goForward', this.goForward.bind(this))
     handle('tabs.goBack', this.goBack.bind(this))
+    handle('tabs.captureVisibleTab', this.captureVisibleTab.bind(this))
 
     this.ctx.store.on('tab-added', this.observeTab.bind(this))
   }
@@ -170,6 +171,57 @@ export class TabsAPI {
       ? this.ctx.store.getActiveTabFromWindow(currentWin)
       : this.ctx.store.getActiveTabOfCurrentWindow()
     return tab ? this.getTabDetails(tab) : undefined
+  }
+
+  /**
+   * Capture the visible area of the active tab as a data URL.
+   * Uses Electron's webContents.capturePage(); nothing is written to disk.
+   */
+  private async captureVisibleTab(
+    event: ExtensionEvent,
+    windowIdOrOptions?: number | null | { format?: 'png' | 'jpeg'; quality?: number },
+    options?: { format?: 'png' | 'jpeg'; quality?: number },
+  ): Promise<string | undefined> {
+    let windowId: number | null | undefined
+    let opts: { format?: 'png' | 'jpeg'; quality?: number } | undefined
+    if (typeof windowIdOrOptions === 'number' || windowIdOrOptions === null) {
+      windowId = windowIdOrOptions
+      opts = options
+    } else if (windowIdOrOptions && typeof windowIdOrOptions === 'object' && !Array.isArray(windowIdOrOptions)) {
+      windowId = null
+      opts = windowIdOrOptions
+    } else {
+      windowId = null
+      opts = options
+    }
+
+    const store = this.ctx.store
+    let win: Electron.BaseWindow | null
+
+    if (windowId == null || windowId === TabsAPI.WINDOW_ID_CURRENT) {
+      win = store.getCurrentWindowForExtension(event.extension.id)
+    } else {
+      win = store.getWindowById(windowId)
+    }
+
+    const webContents = win ? store.getActiveTabFromWindow(win) : undefined
+    if (!webContents || webContents.isDestroyed()) {
+      return undefined
+    }
+
+    const image = await webContents.capturePage()
+    if (!image || image.isEmpty()) {
+      return undefined
+    }
+
+    const format = opts?.format ?? 'png'
+    const quality = opts?.quality ?? 92
+
+    if (format === 'jpeg') {
+      const buf = image.toJPEG(quality)
+      return `data:image/jpeg;base64,${buf.toString('base64')}`
+    }
+    return image.toDataURL()
   }
 
   private async create(event: ExtensionEvent, details: chrome.tabs.CreateProperties = {}) {

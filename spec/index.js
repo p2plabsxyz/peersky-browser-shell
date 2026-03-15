@@ -34,6 +34,11 @@ process.on('uncaughtException', (err) => {
 
 // Tell ts-node which tsconfig to use
 process.env.TS_NODE_PROJECT = path.resolve(__dirname, '../tsconfig.json')
+// Force CommonJS module resolution in ts-node so bare specifiers (e.g.
+// `import ... from 'events-helpers'` without a .js extension) resolve
+// correctly. Electron 37 treats this process as ESM (module: ESNext in
+// tsconfig), but ts-node's ESM resolver requires explicit extensions.
+process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS' })
 process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true'
 
 const { app, protocol } = require('electron')

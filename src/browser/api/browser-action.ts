@@ -505,28 +505,53 @@ export class BrowserActionAPI {
   }
 
   private openPopup = (event: ExtensionEvent, options?: chrome.action.OpenPopupOptions) => {
-    const window =
+    let window =
       typeof options?.windowId === 'number'
         ? this.ctx.store.getWindowById(options.windowId)
         : this.ctx.store.getCurrentWindow()
     if (!window || window.isDestroyed()) {
-      d('openPopup: window %d destroyed', window?.id)
+      window = this.ctx.store.getCurrentWindow() ?? undefined
+    }
+    if (!window || window.isDestroyed()) {
+      d('openPopup: no window available (windowId=%s)', options?.windowId)
       return
     }
 
-    const activeTab = this.ctx.store.getActiveTabFromWindow(window)
-    if (!activeTab) return
+    let activeTab = this.ctx.store.getActiveTabFromWindow(window)
+    if (!activeTab) {
+      activeTab = this.ctx.store.getActiveTabOfCurrentWindow()
+    }
+    if (!activeTab) {
+      const winId = (window as Electron.BrowserWindow).id
+      const firstTab = Array.from(this.ctx.store.tabs).find(
+        (t) => !t.isDestroyed() && this.ctx.store.tabToWindow.get(t) === window,
+      )
+      activeTab = firstTab ?? undefined
+    }
+    if (!activeTab) {
+      d('openPopup: no active tab for window %d', (window as Electron.BrowserWindow).id)
+      return
+    }
 
-    const [width] = window.getSize()
+    const [width] = (window as Electron.BrowserWindow).getSize()
     const anchorSize = 64
 
     this.activateClick({
       eventType: 'click',
       extensionId: event.extension.id,
-      tabId: activeTab?.id,
-      // TODO(mv3): get anchor position
+      tabId: activeTab.id,
       anchorRect: { x: width - anchorSize, y: 0, width: anchorSize, height: anchorSize },
     })
+  }
+
+  /**
+   * Directly send browserAction.onClicked to an extension (for hosts like Peersky that
+   * trigger clicks from the UI). Does not depend on the store having a window/tab.
+   */
+  triggerClicked(extensionId: string, tabDetails?: Partial<chrome.tabs.Tab>) {
+    const details = tabDetails ?? { id: 0, windowId: 0, url: '', active: true }
+    d(`triggerClicked for ${extensionId}`)
+    this.ctx.router.sendEvent(extensionId, 'browserAction.onClicked', details)
   }
 
   private onUpdate() {

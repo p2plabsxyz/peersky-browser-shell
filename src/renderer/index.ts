@@ -123,12 +123,17 @@ export const injectExtensionAPIs = () => {
     }
 
     class ExtensionEvent<T extends Function> implements chrome.events.Event<T> {
+      private listeners = new Set<T>()
+
       constructor(private name: string) {}
 
       addListener(callback: T) {
+        if (this.listeners.has(callback)) return
+        this.listeners.add(callback)
         electron.addExtensionListener(extensionId, this.name, callback)
       }
       removeListener(callback: T) {
+        this.listeners.delete(callback)
         electron.removeExtensionListener(extensionId, this.name, callback)
       }
 
@@ -138,7 +143,7 @@ export const injectExtensionAPIs = () => {
         throw new Error('Method not implemented.')
       }
       hasListener(callback: T): boolean {
-        throw new Error('Method not implemented.')
+        return this.listeners.has(callback)
       }
       removeRules(ruleIdentifiers?: string[] | undefined, callback?: (() => void) | undefined): void
       removeRules(callback?: (() => void) | undefined): void
@@ -152,7 +157,7 @@ export const injectExtensionAPIs = () => {
         throw new Error('Method not implemented.')
       }
       hasListeners(): boolean {
-        throw new Error('Method not implemented.')
+        return this.listeners.size > 0
       }
     }
 
@@ -322,6 +327,21 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      debugger: {
+        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('debugger'),
+        factory: (base) => {
+          return {
+            ...base,
+            attach: invokeExtension('debugger.attach'),
+            detach: invokeExtension('debugger.detach'),
+            getTargets: invokeExtension('debugger.getTargets'),
+            sendCommand: invokeExtension('debugger.sendCommand'),
+            onDetach: new ExtensionEvent('debugger.onDetach'),
+            onEvent: new ExtensionEvent('debugger.onEvent'),
+          }
+        },
+      },
+
       contextMenus: {
         factory: (base) => {
           let menuCounter = 0
@@ -356,7 +376,7 @@ export const injectExtensionAPIs = () => {
               menuCreate(createProperties, callback)
               return createProperties.id
             },
-            update: invokeExtension('contextMenus.update', { noop: true }),
+            update: invokeExtension('contextMenus.update'),
             remove: invokeExtension('contextMenus.remove'),
             removeAll: invokeExtension('contextMenus.removeAll'),
             onClicked: new ExtensionEvent<
@@ -424,6 +444,32 @@ export const injectExtensionAPIs = () => {
             getViews: () => [],
           }
         },
+      },
+
+      identity: {
+        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('identity'),
+        factory: (base) => {
+          const redirectDomain = 'chromiumapp.org'
+          const redirectBase = extensionId
+            ? `https://${extensionId}.${redirectDomain}/`
+            : ''
+          return {
+            ...base,
+            getRedirectURL: (path?: string) =>
+              path ? redirectBase + path.replace(/^\//, '') : redirectBase,
+            launchWebAuthFlow: invokeExtension('identity.launchWebAuthFlow'),
+            getAuthToken: invokeExtension('identity.getAuthToken'),
+          }
+        },
+      },
+
+      management: {
+        factory: (base) => ({
+          ...base,
+          getSelf: invokeExtension('management.getSelf'),
+          getAll: invokeExtension('management.getAll'),
+          get: invokeExtension('management.get'),
+        }),
       },
 
       i18n: {
@@ -516,6 +562,9 @@ export const injectExtensionAPIs = () => {
             },
             openOptionsPage: invokeExtension('runtime.openOptionsPage'),
             sendNativeMessage: invokeExtension('runtime.sendNativeMessage'),
+            /** Forward extension logs to the main process console. */
+            logToMain: (...args: unknown[]) =>
+              electron.invokeExtension(extensionId, 'runtime.logToMain', {}, ...args),
           }
         },
       },
@@ -523,11 +572,40 @@ export const injectExtensionAPIs = () => {
       storage: {
         factory: (base) => {
           const local = base && base.local
+
+          const customOnChanged = new ExtensionEvent('storage.onChanged')
+          const originalAddListener = base?.onChanged?.addListener?.bind(base.onChanged)
+          const originalRemoveListener = base?.onChanged?.removeListener?.bind(base.onChanged)
+
+          const addListener = (cb: any) => {
+            if (originalAddListener) originalAddListener(cb)
+            customOnChanged.addListener(cb)
+          }
+          const removeListener = (cb: any) => {
+            if (originalRemoveListener) originalRemoveListener(cb)
+            customOnChanged.removeListener(cb)
+          }
+          const hasListener = (cb: any) => {
+            return customOnChanged.hasListener(cb) || (base?.onChanged?.hasListener?.(cb) ?? false)
+          }
+          const hasListeners = () =>
+            customOnChanged.hasListeners() || (base?.onChanged?.hasListeners?.() ?? false)
+
+          const onChanged = { addListener, removeListener, hasListener, hasListeners }
+
           return {
             ...base,
+            onChanged,
             // TODO: provide a backend for browsers to opt-in to
             managed: local,
-            sync: local,
+            sync: {
+              ...(base as any)?.sync ?? local,
+              get: invokeExtension('storage.sync.get'),
+              set: invokeExtension('storage.sync.set'),
+              remove: invokeExtension('storage.sync.remove'),
+              clear: invokeExtension('storage.sync.clear'),
+              getBytesInUse: invokeExtension('storage.sync.getBytesInUse'),
+            },
           }
         },
       },
@@ -563,6 +641,7 @@ export const injectExtensionAPIs = () => {
             get: invokeExtension('tabs.get'),
             getCurrent: invokeExtension('tabs.getCurrent'),
             getAllInWindow: invokeExtension('tabs.getAllInWindow'),
+            captureVisibleTab: invokeExtension('tabs.captureVisibleTab'),
             insertCSS: invokeExtension('tabs.insertCSS'),
             query: invokeExtension('tabs.query'),
             reload: invokeExtension('tabs.reload'),

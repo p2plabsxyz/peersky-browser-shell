@@ -5,11 +5,15 @@ import { existsSync } from 'node:fs'
 import { createRequire } from 'node:module'
 
 import { BrowserActionAPI } from './api/browser-action'
+import { DebuggerAPI } from './api/debugger'
 import { TabsAPI } from './api/tabs'
 import { WindowsAPI } from './api/windows'
 import { WebNavigationAPI } from './api/web-navigation'
 import { ExtensionStore } from './store'
+import { StorageSyncAPI } from './api/storage-sync'
+import { IdentityAPI } from './api/identity'
 import { ContextMenusAPI } from './api/context-menus'
+import { ManagementAPI } from './api/management'
 import { RuntimeAPI } from './api/runtime'
 import { CookiesAPI } from './api/cookies'
 import { NotificationsAPI } from './api/notifications'
@@ -123,11 +127,15 @@ export class ElectronChromeExtensions extends EventEmitter {
   private api: {
     browserAction: BrowserActionAPI
     contextMenus: ContextMenusAPI
+    management: ManagementAPI
     commands: CommandsAPI
     cookies: CookiesAPI
+    debugger: DebuggerAPI
+    identity: IdentityAPI
     notifications: NotificationsAPI
     permissions: PermissionsAPI
     runtime: RuntimeAPI
+    storageSync: StorageSyncAPI
     tabs: TabsAPI
     webNavigation: WebNavigationAPI
     windows: WindowsAPI
@@ -160,11 +168,15 @@ export class ElectronChromeExtensions extends EventEmitter {
     this.api = {
       browserAction: new BrowserActionAPI(this.ctx),
       contextMenus: new ContextMenusAPI(this.ctx),
+      management: new ManagementAPI(this.ctx),
       commands: new CommandsAPI(this.ctx),
       cookies: new CookiesAPI(this.ctx),
+      debugger: new DebuggerAPI(this.ctx),
+      identity: new IdentityAPI(this.ctx),
       notifications: new NotificationsAPI(this.ctx),
       permissions: new PermissionsAPI(this.ctx),
       runtime: new RuntimeAPI(this.ctx),
+      storageSync: new StorageSyncAPI(this.ctx),
       tabs: new TabsAPI(this.ctx),
       webNavigation: new WebNavigationAPI(this.ctx),
       windows: new WindowsAPI(this.ctx),

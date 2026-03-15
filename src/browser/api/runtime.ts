@@ -16,6 +16,13 @@ export class RuntimeAPI extends EventEmitter {
     handle('runtime.disconnectNative', this.disconnectNative, { permission: 'nativeMessaging' })
     handle('runtime.openOptionsPage', this.openOptionsPage)
     handle('runtime.sendNativeMessage', this.sendNativeMessage, { permission: 'nativeMessaging' })
+    handle('runtime.logToMain', this.logToMain, { extensionContext: false })
+  }
+
+  /** Forward extension logs to the main process console. */
+  private logToMain = (event: ExtensionEvent, ...args: unknown[]) => {
+    const id = event.extension?.id ?? 'unknown'
+    console.log(`[Extension ${id}]`, ...args)
   }
 
   private connectNative = async (

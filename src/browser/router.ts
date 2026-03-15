@@ -415,11 +415,12 @@ export class ExtensionRouter {
    */
   sendEvent(targetExtensionId: string | undefined, eventName: string, ...args: any[]) {
     const { listeners } = this
-    let eventListeners = listeners.get(eventName)
+    const eventListeners = listeners.get(eventName)
     const ipcName = `crx-${eventName}`
 
     if (!eventListeners || eventListeners.length === 0) {
-      // Ignore events with no listeners
+      d(`sendEvent: no listeners for '${eventName}' (extension: ${targetExtensionId ?? 'any'})`)
+      this.deliverToTargetExtensionWhenNoListener(targetExtensionId, eventName, ipcName, args)
       return
     }
 
@@ -433,10 +434,14 @@ export class ExtensionRouter {
 
       if (type === 'service-worker') {
         const scope = `chrome-extension://${extensionId}/`
+        const argsCopy = [...args]
         this.session.serviceWorkers
           .startWorkerForScope(scope)
           .then((serviceWorker) => {
-            serviceWorker.send(ipcName, ...args)
+            setTimeout(() => {
+              if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
+              serviceWorker.send(ipcName, ...argsCopy)
+            }, 200)
           })
           .catch((error) => {
             d('failed to send %s to %s', eventName, extensionId)
@@ -445,7 +450,7 @@ export class ExtensionRouter {
       } else {
         if (listener.host.isDestroyed()) {
           console.error(`Unable to send '${eventName}' to extension host for ${extensionId}`)
-          return
+          continue
         }
         listener.host.send(ipcName, ...args)
       }
@@ -453,7 +458,45 @@ export class ExtensionRouter {
       sentCount++
     }
 
+    if (sentCount === 0 && targetExtensionId) {
+      this.deliverToTargetExtensionWhenNoListener(targetExtensionId, eventName, ipcName, args)
+    }
+
     d(`sent '${eventName}' event to ${sentCount} listeners`)
+  }
+
+  /**
+   * For action-click events: MV3 service workers start lazily. When the host
+   * triggers a click for an extension that has not yet run its worker, no listener exists.
+   * Start the worker for the target extension and deliver the event after it has had time to
+   * run and register its IPC listener.
+   */
+  private deliverToTargetExtensionWhenNoListener(
+    targetExtensionId: string | undefined,
+    eventName: string,
+    ipcName: string,
+    args: any[],
+  ) {
+    if (
+      !targetExtensionId ||
+      (eventName !== 'browserAction.onClicked' && eventName !== 'action.onClicked')
+    ) {
+      return
+    }
+    const scope = `chrome-extension://${targetExtensionId}/`
+    const argsCopy = [...args]
+    this.session.serviceWorkers
+      .startWorkerForScope(scope)
+      .then((serviceWorker) => {
+        if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
+        setTimeout(() => {
+          if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
+          serviceWorker.send(ipcName, ...argsCopy)
+        }, 400)
+      })
+      .catch((err) => {
+        console.error(err)
+      })
   }
 
   /** Broadcasts extension event to all extension hosts listening for it. */

@@ -86,6 +86,7 @@ export class ContextMenusAPI {
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
     handle('contextMenus.create', this.create)
+    handle('contextMenus.update', this.update)
     handle('contextMenus.remove', this.remove)
     handle('contextMenus.removeAll', this.removeAll)
 
@@ -287,17 +288,48 @@ export class ContextMenusAPI {
   private create = ({ extension }: ExtensionEvent, createProperties: ContextItemProps) => {
     const { id, type, title } = createProperties
 
-    if (this.menus.has(id)) {
-      // TODO: duplicate error
+    const items = this.menus.get(extension.id)
+    if (items?.has(id)) {
+      // Duplicate menu item id for this extension
       return
     }
 
     if (!title && type !== 'separator') {
-      // TODO: error
+      // Title required for non-separator items
       return
     }
 
     this.addContextItem(extension.id, createProperties)
+  }
+
+  private update = (
+    { extension }: ExtensionEvent,
+    menuItemId: string,
+    updateProperties: chrome.contextMenus.UpdateProperties,
+  ) => {
+    const items = this.menus.get(extension.id)
+    const existing = items?.get(menuItemId)
+    if (!existing) return
+
+    const updatable: (keyof chrome.contextMenus.UpdateProperties)[] = [
+      'title',
+      'contexts',
+      'checked',
+      'enabled',
+      'parentId',
+      'targetUrlPatterns',
+      'documentUrlPatterns',
+      'type',
+      'visible',
+    ]
+    const existingRecord = existing as unknown as Record<string, unknown>
+    const updateRecord = updateProperties as Record<string, unknown>
+    for (const key of updatable) {
+      const value = updateRecord[key]
+      if (value !== undefined) {
+        existingRecord[key] = value
+      }
+    }
   }
 
   private remove = ({ extension }: ExtensionEvent, menuItemId: string) => {
