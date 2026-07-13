@@ -510,6 +510,9 @@ export class WebRequestAPI {
       case 'media':
       case 'fetch':
         return resourceType.toLowerCase()
+      case 'ping':
+      case 'websocket':
+        return resourceType.toLowerCase()
       default:
         return 'other'
     }
@@ -555,6 +558,10 @@ export class WebRequestAPI {
   /**
    * Referrer is often empty under strict referrer policies; DNR rules then mis-classify
    * first-party subresources as third-party. Fall back to the requesting frame URL or tab URL.
+   *
+   * For webview requests, the most reliable source is details.webContents.mainFrame?.url
+   * (available Electron >= 25), which exposes the top-level page URL even when the
+   * referrer is stripped and the frame object is null for subresource requests.
    */
   private resolveInitiator(details: ElectronRequestDetails): string | undefined {
     const ref = details.referrer
@@ -568,6 +575,19 @@ export class WebRequestAPI {
         /* continue */
       }
     }
+
+    // Fast path: mainFrame.url is the most reliable source for webview subresource requests.
+    try {
+      const mf = (details.webContents as any)?.mainFrame
+      if (mf && typeof mf.url === 'string') {
+        if (mf.url.startsWith('http://') || mf.url.startsWith('https://') || mf.url.startsWith('chrome-extension://')) {
+          return mf.url
+        }
+      }
+    } catch {
+      /* continue */
+    }
+
     try {
       const frameUrl = details.frame?.url
       if (typeof frameUrl === 'string' && (frameUrl.startsWith('http://') || frameUrl.startsWith('https://'))) {
@@ -576,9 +596,11 @@ export class WebRequestAPI {
     } catch {
       /* continue */
     }
+
+    // Fallback: webContents.getURL() — reliable once the webview has navigated.
     try {
       const wc = details.webContents
-      if (wc && typeof wc.isDestroyed === 'function' && !wc.isDestroyed()) {
+      if (wc && typeof (wc as any).isDestroyed === 'function' && !(wc as any).isDestroyed()) {
         const tabUrl = wc.getURL()
         if (tabUrl.startsWith('http://') || tabUrl.startsWith('https://')) {
           return tabUrl
@@ -587,6 +609,7 @@ export class WebRequestAPI {
     } catch {
       /* continue */
     }
+
     const wid = details.webContentsId
     if (typeof wid === 'number') {
       try {
@@ -601,6 +624,8 @@ export class WebRequestAPI {
         /* continue */
       }
     }
+
+    // chrome-extension:// initiator fallbacks (for extension-to-extension requests)
     if (typeof ref === 'string' && ref.startsWith('chrome-extension://')) {
       try {
         new URL(ref)
@@ -619,7 +644,7 @@ export class WebRequestAPI {
     }
     try {
       const wc = details.webContents
-      if (wc && typeof wc.isDestroyed === 'function' && !wc.isDestroyed()) {
+      if (wc && typeof (wc as any).isDestroyed === 'function' && !(wc as any).isDestroyed()) {
         const u = wc.getURL()
         if (u.startsWith('chrome-extension://')) return u
       }
@@ -860,7 +885,11 @@ export class WebRequestAPI {
 
     if (this.dnr) {
       const dnrResult = this.dnr.evaluateOnBeforeRequest(probe)
-      if (dnrResult?.cancel === true || typeof dnrResult?.redirectUrl === 'string') {
+      if (
+        dnrResult?.cancel === true ||
+        typeof dnrResult?.redirectUrl === 'string' ||
+        dnrResult?.requestHeaders
+      ) {
         return dnrResult
       }
     }

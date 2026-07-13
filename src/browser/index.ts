@@ -276,7 +276,22 @@ export class ElectronChromeExtensions extends EventEmitter {
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     sessionExtensions.addListener('extension-loaded', (_event, extension) => {
       readLoadedExtensionManifest(this.ctx, extension)
+
+      // Start MV3 background service workers so extensions can
+      // initialize themselves (enable DNR rulesets, set up event
+      // listeners, bootstrap configuration, etc.). PCE's router
+      // holds a reference to the worker to prevent termination.
+      this.startExtensionServiceWorker(extension)
     })
+
+    // Also start service workers for any extensions already loaded.
+    const getAll = (sessionExtensions as any).getAllExtensions
+    if (typeof getAll === 'function') {
+      const list = getAll.call(sessionExtensions) || []
+      for (const ext of list) {
+        this.startExtensionServiceWorker(ext)
+      }
+    }
     sessionExtensions.addListener('extension-unloaded', () => {
       void this.ctx.stateStore.flush().catch((error) => {
         console.error('Failed to flush extension API state store:', error)
@@ -286,6 +301,24 @@ export class ElectronChromeExtensions extends EventEmitter {
       void this.ctx.stateStore.flush().catch((error) => {
         console.error('Failed to flush extension API state store during shutdown:', error)
       })
+    })
+  }
+
+  /**
+   * Start the MV3 background service worker for an extension if it has one.
+   */
+  private startExtensionServiceWorker(extension: Electron.Extension) {
+    const manifest = extension.manifest as chrome.runtime.Manifest
+    // MV3 extensions use "background.service_worker" (a string).
+    // Narrow the union type to access service_worker.
+    const bg = manifest.background
+    if (!bg || !('service_worker' in bg)) return
+    const swPath = bg.service_worker
+    if (!swPath) return
+
+    const scope = `chrome-extension://${extension.id}/`
+    this.ctx.session.serviceWorkers.startWorkerForScope(scope).catch((err) => {
+      console.error(`Failed to start service worker for ${extension.id} (${extension.name}):`, err)
     })
   }
 

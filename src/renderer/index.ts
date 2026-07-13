@@ -488,6 +488,7 @@ export const injectExtensionAPIs = () => {
             updateSessionRules: invokeExtension('declarativeNetRequest.updateSessionRules'),
             getEnabledRulesets: invokeExtension('declarativeNetRequest.getEnabledRulesets'),
             updateEnabledRulesets: invokeExtension('declarativeNetRequest.updateEnabledRulesets'),
+            updateStaticRules: invokeExtension('declarativeNetRequest.updateStaticRules'),
             isRegexSupported: invokeExtension('declarativeNetRequest.isRegexSupported'),
             getMatchedRules: invokeExtension('declarativeNetRequest.getMatchedRules'),
           }
@@ -820,11 +821,21 @@ export const injectExtensionAPIs = () => {
             QUOTA_BYTES: 10485760,
           }
 
+          const ipcManaged = {
+            get: cbWrapStorageGet(invokeExtension('storage.managed.get')),
+            onChanged: {
+              addListener: () => {},
+              removeListener: () => {},
+              hasListener: () => false,
+              hasListeners: () => false,
+            },
+          }
+
           return {
             ...base,
             onChanged,
             local: ipcLocal,
-            managed: ipcLocal,
+            managed: ipcManaged,
             session: (base as any)?.session || ipcLocal,
             sync: {
               ...(base as any)?.sync ?? ipcLocal,
@@ -907,6 +918,8 @@ export const injectExtensionAPIs = () => {
       },
 
       webNavigation: {
+        shouldInject: () =>
+          !!(manifest.permissions as string[] | undefined)?.includes('webNavigation'),
         factory: (base) => {
           return {
             ...base,
