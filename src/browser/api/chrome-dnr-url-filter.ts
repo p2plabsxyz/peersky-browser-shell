@@ -3,7 +3,7 @@
  * pattern matching (not ABP / uBlock — `^` separator semantics differ).
  */
 
-/** `^` matches any single char except ASCII alnum and `_-`.%`, or end of string (Chrome). */
+/** `^` matches any single char except ASCII alnum and `_-.%`, or end of string (Chrome). */
 export function isChromeUrlFilterSeparatorChar(c: string): boolean {
   if (!c) return true
   const code = c.charCodeAt(0)
@@ -75,7 +75,12 @@ function matchTail(
   text: string,
   mustConsumeAllText: boolean,
 ): boolean {
+  const memo = new Set<string>()
   const rec = (pi: number, ti: number): boolean => {
+    const key = `${pi}:${ti}`
+    if (memo.has(key)) return false
+    memo.add(key)
+
     if (pi === pattern.length) {
       return !mustConsumeAllText || ti === text.length
     }

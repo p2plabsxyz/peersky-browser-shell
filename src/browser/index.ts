@@ -312,9 +312,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     // MV3 extensions use "background.service_worker" (a string).
     // Narrow the union type to access service_worker.
     const bg = manifest.background
-    if (!bg || !('service_worker' in bg)) return
-    const swPath = bg.service_worker
-    if (!swPath) return
+    if (!bg || !('service_worker' in bg) || !bg.service_worker) return
 
     const scope = `chrome-extension://${extension.id}/`
     this.ctx.session.serviceWorkers.startWorkerForScope(scope).catch((err) => {

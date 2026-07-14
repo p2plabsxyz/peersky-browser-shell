@@ -885,11 +885,9 @@ export class WebRequestAPI {
 
     if (this.dnr) {
       const dnrResult = this.dnr.evaluateOnBeforeRequest(probe)
-      if (
-        dnrResult?.cancel === true ||
-        typeof dnrResult?.redirectUrl === 'string' ||
-        dnrResult?.requestHeaders
-      ) {
+      // Electron onBeforeRequest only honors cancel/redirect. Header mutations
+      // from modifyHeaders are applied in the sendHeaders / headersReceived stages.
+      if (dnrResult?.cancel === true || typeof dnrResult?.redirectUrl === 'string') {
         return dnrResult
       }
     }

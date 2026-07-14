@@ -417,18 +417,20 @@ export class StorageSyncAPI {
   ) => {
     const data = await this.localLoad(extension.id)
     const policy =
-      data.managedConfig && typeof data.managedConfig === 'object' ? data.managedConfig : {}
-    if (keys == null) return policy
-    const result: Record<string, unknown> = {}
+      data.managedConfig && typeof data.managedConfig === 'object'
+        ? Object.assign(Object.create(null), data.managedConfig as Record<string, unknown>)
+        : Object.create(null)
+    if (keys == null) return { ...policy }
+    const result: Record<string, unknown> = Object.create(null)
     if (typeof keys === 'string') {
-      if (keys in policy) result[keys] = policy[keys]
+      if (Object.prototype.hasOwnProperty.call(policy, keys)) result[keys] = policy[keys]
     } else if (Array.isArray(keys)) {
       for (const k of keys) {
-        if (k in policy) result[k] = policy[k]
+        if (Object.prototype.hasOwnProperty.call(policy, k)) result[k] = policy[k]
       }
     } else {
       for (const [k, defaultVal] of Object.entries(keys)) {
-        result[k] = k in policy ? policy[k] : defaultVal
+        result[k] = Object.prototype.hasOwnProperty.call(policy, k) ? policy[k] : defaultVal
       }
     }
     return result
