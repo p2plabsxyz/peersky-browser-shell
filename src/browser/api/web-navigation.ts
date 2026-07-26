@@ -277,9 +277,9 @@ export class WebNavigationAPI {
   ) => {
     if (tab.isDestroyed()) return
     const frame = getFrame(frameProcessId, frameRoutingId)
-    const url = tab.getURL()
     const details = withFrame(frame ?? null, (f) => {
       const frameId = getFrameId(f)
+      const url = (typeof f.url === 'string' && f.url) || tab.getURL()
       return {
         documentId: this.ctx.store.getDocumentId(tab.id, frameId) || this.ctx.store.newDocumentId(tab.id, frameId),
         frameId,

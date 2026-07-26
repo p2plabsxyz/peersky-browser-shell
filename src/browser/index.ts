@@ -405,7 +405,7 @@ export class ElectronChromeExtensions extends EventEmitter {
   /** webRequest.onBeforeRequest bridge. */
   notifyWebRequestOnBeforeRequest(
     details: Electron.OnBeforeRequestListenerDetails,
-  ): Promise<{ cancel?: boolean; redirectUrl?: string }> {
+  ): Promise<{ cancel?: boolean; redirectUrl?: string; redirectURL?: string }> {
     return this.api.webRequest.notifyOnBeforeRequest(details)
   }
 
@@ -426,6 +426,12 @@ export class ElectronChromeExtensions extends EventEmitter {
     details: Electron.OnHeadersReceivedListenerDetails,
   ): Promise<{ responseHeaders?: Record<string, string | string[]> }> {
     return this.api.webRequest.notifyOnHeadersReceived(details)
+  }
+
+  notifyWebRequestOnBeforeRedirect(
+    details: Electron.OnBeforeRedirectListenerDetails,
+  ): Promise<void> {
+    return this.api.webRequest.notifyOnBeforeRedirect(details)
   }
 
   /** webRequest.onResponseStarted bridge. */

@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { promises as fs } from 'node:fs'
+import { promises as fs, existsSync } from 'node:fs'
 import path from 'node:path'
 
 import { getDomain } from 'tldts'
@@ -43,14 +43,99 @@ function getSessionExtensions(session: Electron.Session) {
   return session.extensions || session
 }
 
+/** Match resourceTypes / excludedResourceTypes; omit both ⇒ all except main_frame. */
 function dnrResourceTypeMatches(
-  conditionTypes: chrome.declarativeNetRequest.ResourceType[] | undefined,
+  condition: RuleCondition,
   normalizedType: string | undefined,
 ): boolean {
-  if (!conditionTypes || conditionTypes.length === 0) return true
   const t = normalizedType || 'other'
   const mapped = t === 'img' ? 'image' : t
-  return conditionTypes.some((ct) => ct === mapped || (ct === 'image' && t === 'img'))
+
+  const included = condition.resourceTypes
+  if (included?.length) return included.some((ct) => ct === mapped)
+
+  const excluded = (condition as RuleCondition & {
+    excludedResourceTypes?: chrome.declarativeNetRequest.ResourceType[]
+  }).excludedResourceTypes
+  if (excluded?.length) return !excluded.some((ct) => ct === mapped)
+
+  return mapped !== 'main_frame'
+}
+
+type UrlTransform = {
+  scheme?: string
+  host?: string
+  port?: string
+  path?: string
+  query?: string
+  queryTransform?: {
+    addOrReplaceParams?: { key: string; value: string; replaceOnly?: boolean }[]
+    removeParams?: string[]
+  }
+  fragment?: string
+  username?: string
+  password?: string
+}
+
+/** Apply queryTransform without re-encoding untouched pairs. */
+function applyQueryTransform(
+  search: string,
+  queryTransform: NonNullable<UrlTransform['queryTransform']>,
+): string {
+  const raw = search.startsWith('?') ? search.slice(1) : search
+  let pairs = raw.length > 0 ? raw.split('&') : []
+  const keyOf = (pair: string) => {
+    const eq = pair.indexOf('=')
+    return eq === -1 ? pair : pair.slice(0, eq)
+  }
+
+  const removeParams = queryTransform.removeParams
+  if (removeParams?.length) {
+    const drop = new Set(removeParams)
+    pairs = pairs.filter((pair) => !drop.has(keyOf(pair)))
+  }
+
+  for (const param of queryTransform.addOrReplaceParams ?? []) {
+    if (!param?.key) continue
+    const next = `${param.key}=${param.value ?? ''}`
+    const at = pairs.findIndex((pair) => keyOf(pair) === param.key)
+    if (at !== -1) {
+      pairs[at] = next
+      pairs = pairs.filter((pair, i) => i === at || keyOf(pair) !== param.key)
+    } else if (!param.replaceOnly) {
+      pairs.push(next)
+    }
+  }
+
+  return pairs.length > 0 ? `?${pairs.join('&')}` : ''
+}
+
+/** Apply redirect.transform. Returns null if nothing changed. */
+function applyUrlTransform(requestUrl: string, transform: UrlTransform): string | null {
+  let u: URL
+  try {
+    u = new URL(requestUrl)
+  } catch {
+    return null
+  }
+
+  if (transform.scheme) u.protocol = `${transform.scheme}:`
+  if (transform.username != null) u.username = transform.username
+  if (transform.password != null) u.password = transform.password
+  if (transform.host) u.hostname = transform.host
+  if (transform.port != null) u.port = transform.port
+  if (transform.path != null) u.pathname = transform.path
+
+  if (transform.query != null) {
+    u.search = transform.query
+  } else if (transform.queryTransform) {
+    u.search = applyQueryTransform(u.search, transform.queryTransform)
+  }
+
+  if (transform.fragment != null) u.hash = transform.fragment
+
+  const next = u.href
+  return next === requestUrl ? null : next
 }
 
 function hostMatchesDomainList(
@@ -147,7 +232,7 @@ function conditionMatchesRequest(
   isUrlFilterCaseSensitive: boolean,
   regex: RegExp | null,
 ): boolean {
-  if (!dnrResourceTypeMatches(condition.resourceTypes, details.type)) return false
+  if (!dnrResourceTypeMatches(condition, details.type)) return false
 
   if (condition.requestMethods?.length) {
     const m = (details.method || 'GET').toLowerCase()
@@ -547,7 +632,7 @@ export class DeclarativeNetRequestAPI {
     if (!best) {
       return null
     }
-    const response = this.actionToBlockingResponse(best, details.url)
+    let response = this.actionToBlockingResponse(best, details.url)
     if (
       response &&
       (response.cancel === true || typeof response.redirectUrl === 'string') &&
@@ -555,7 +640,33 @@ export class DeclarativeNetRequestAPI {
     ) {
       return null
     }
+
+    // Main-frame blocks: prefer the extension's redirect-protection page when present.
+    if (
+      response?.cancel === true &&
+      dnrType === 'main_frame' &&
+      best.condition.resourceTypes?.some((t) => String(t) === 'main_frame')
+    ) {
+      const interstitial = this.mainFrameBlockInterstitialUrl(best.extensionId)
+      if (interstitial) {
+        response = { redirectUrl: interstitial }
+      }
+    }
+
     return response
+  }
+
+  private mainFrameBlockInterstitialUrl(extensionId: string): string | null {
+    try {
+      const sessionExtensions = getSessionExtensions(this.ctx.session)
+      const extension = sessionExtensions.getExtension(extensionId)
+      if (!extension?.path) return null
+      const abs = path.join(extension.path, 'pages', 'redirect-protection', 'index.html')
+      if (!existsSync(abs)) return null
+      return `chrome-extension://${extensionId}/pages/redirect-protection/index.html`
+    } catch {
+      return null
+    }
   }
 
   private actionToBlockingResponse(
@@ -584,19 +695,14 @@ export class DeclarativeNetRequestAPI {
         if (!red) return null
         if (red.url) return { redirectUrl: red.url }
         if (red.extensionPath) {
-          const p = red.extensionPath.replace(/^\//, '')
-          return { redirectUrl: `chrome-extension://${rule.extensionId}/${p}` }
+          const p = red.extensionPath.startsWith('/')
+            ? red.extensionPath
+            : `/${red.extensionPath}`
+          return { redirectUrl: `chrome-extension://${rule.extensionId}${p}` }
         }
-        if (red.transform?.scheme === 'https') {
-          try {
-            const u = new URL(requestUrl)
-            if (u.protocol === 'http:') {
-              u.protocol = 'https:'
-              return { redirectUrl: u.href }
-            }
-          } catch {
-            return null
-          }
+        if (red.transform) {
+          const transformed = applyUrlTransform(requestUrl, red.transform as UrlTransform)
+          if (transformed) return { redirectUrl: transformed }
         }
         return null
       }

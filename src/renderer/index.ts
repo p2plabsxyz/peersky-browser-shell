@@ -978,6 +978,10 @@ export const injectExtensionAPIs = () => {
             (details: chrome.webRequest.WebRequestHeadersDetails) => void
           >('webRequest.onSendHeaders')
 
+          const onBeforeRedirectEvent = new ExtensionEvent<
+            (details: chrome.webRequest.WebRedirectionResponseDetails) => void
+          >('webRequest.onBeforeRedirect')
+
           const onResponseStartedEvent = new ExtensionEvent<
             (details: chrome.webRequest.WebResponseCacheDetails) => void
           >('webRequest.onResponseStarted')
@@ -1243,6 +1247,35 @@ export const injectExtensionAPIs = () => {
               },
               hasListeners() {
                 return onHeadersReceivedEvent.hasListeners()
+              },
+            },
+            onBeforeRedirect: {
+              addListener(
+                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
+                filter: chrome.webRequest.RequestFilter,
+                extraInfoSpec?: string[],
+              ) {
+                invokeExtension('webRequest.addOnBeforeRedirectListener')(
+                  filter,
+                  extraInfoSpec,
+                )
+                onBeforeRedirectEvent.addListener(callback)
+              },
+              removeListener(
+                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
+              ) {
+                onBeforeRedirectEvent.removeListener(callback)
+                if (!onBeforeRedirectEvent.hasListeners()) {
+                  invokeExtension('webRequest.removeOnBeforeRedirectListener')().catch(() => {})
+                }
+              },
+              hasListener(
+                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
+              ) {
+                return onBeforeRedirectEvent.hasListener(callback)
+              },
+              hasListeners() {
+                return onBeforeRedirectEvent.hasListeners()
               },
             },
             onResponseStarted: {

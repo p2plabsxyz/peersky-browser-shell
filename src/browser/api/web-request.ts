@@ -15,11 +15,20 @@ interface ListenerEntry {
 export interface WebRequestBlockingResponse {
   cancel?: boolean
   redirectUrl?: string
+  redirectURL?: string
   requestHeaders?: Record<string, string | string[]>
   responseHeaders?: Record<string, string | string[]>
   authCredentials?: {
     username: string
     password: string
+  }
+}
+
+function originsMatch(a: string, b: string): boolean {
+  try {
+    return new URL(a).origin === new URL(b).origin
+  } catch {
+    return false
   }
 }
 
@@ -39,6 +48,7 @@ export interface WebRequestDetails {
   requestHeaders?: Record<string, string | string[]>
   responseHeaders?: Record<string, string | string[]>
   statusCode?: number
+  redirectUrl?: string
   ip?: string
   fromCache?: boolean
   error?: string
@@ -94,6 +104,7 @@ export class WebRequestAPI {
   private onBeforeSendHeadersListeners: ListenerEntry[] = []
   private onSendHeadersListeners: ListenerEntry[] = []
   private onHeadersReceivedListeners: ListenerEntry[] = []
+  private onBeforeRedirectListeners: ListenerEntry[] = []
   private onResponseStartedListeners: ListenerEntry[] = []
   private onCompletedListeners: ListenerEntry[] = []
   private onErrorOccurredListeners: ListenerEntry[] = []
@@ -134,6 +145,12 @@ export class WebRequestAPI {
       permission: 'webRequest',
     })
     handle('webRequest.removeOnHeadersReceivedListener', this.removeOnHeadersReceivedListener, {
+      permission: 'webRequest',
+    })
+    handle('webRequest.addOnBeforeRedirectListener', this.addOnBeforeRedirectListener, {
+      permission: 'webRequest',
+    })
+    handle('webRequest.removeOnBeforeRedirectListener', this.removeOnBeforeRedirectListener, {
       permission: 'webRequest',
     })
     handle(
@@ -183,6 +200,9 @@ export class WebRequestAPI {
       )
       this.onSendHeadersListeners = this.onSendHeadersListeners.filter((e) => e.extensionId !== id)
       this.onHeadersReceivedListeners = this.onHeadersReceivedListeners.filter(
+        (e) => e.extensionId !== id,
+      )
+      this.onBeforeRedirectListeners = this.onBeforeRedirectListeners.filter(
         (e) => e.extensionId !== id,
       )
       this.onResponseStartedListeners = this.onResponseStartedListeners.filter(
@@ -308,6 +328,30 @@ export class WebRequestAPI {
   private removeOnHeadersReceivedListener = ({ extension }: ExtensionEvent) => {
     if (!extension) return
     this.onHeadersReceivedListeners = this.onHeadersReceivedListeners.filter(
+      (e) => e.extensionId !== extension.id,
+    )
+  }
+
+  private addOnBeforeRedirectListener = (
+    { extension }: ExtensionEvent,
+    filter: chrome.webRequest.RequestFilter,
+    extraInfoSpec?: string[],
+  ) => {
+    if (!filter?.urls || !Array.isArray(filter.urls)) return
+    this.onBeforeRedirectListeners = this.onBeforeRedirectListeners.filter(
+      (e) => e.extensionId !== extension.id,
+    )
+    this.onBeforeRedirectListeners.push({
+      id: `wr-${++this.listenerIdCounter}`,
+      extensionId: extension.id,
+      filter: { ...filter },
+      extraInfoSpec,
+    })
+  }
+
+  private removeOnBeforeRedirectListener = ({ extension }: ExtensionEvent) => {
+    if (!extension) return
+    this.onBeforeRedirectListeners = this.onBeforeRedirectListeners.filter(
       (e) => e.extensionId !== extension.id,
     )
   }
@@ -455,9 +499,77 @@ export class WebRequestAPI {
       if (r.cancel === true) return { cancel: true }
     }
     for (const r of results.values()) {
-      if (r.redirectUrl && r.redirectUrl.length > 0) return { redirectUrl: r.redirectUrl }
+      if (r.redirectUrl && r.redirectUrl.length > 0) {
+        return { redirectUrl: r.redirectUrl }
+      }
     }
     return {}
+  }
+
+  /** Apply DNR result; loadURL fallback when main-frame redirect/cancel is ignored. */
+  private applyDnrBeforeRequestResult(
+    details: Electron.OnBeforeRequestListenerDetails,
+    dnrResult: WebRequestBlockingResponse,
+  ): WebRequestBlockingResponse {
+    const redirectUrl =
+      typeof dnrResult.redirectUrl === 'string' && dnrResult.redirectUrl
+        ? dnrResult.redirectUrl
+        : typeof dnrResult.redirectURL === 'string'
+          ? dnrResult.redirectURL
+          : undefined
+
+    if (
+      redirectUrl &&
+      redirectUrl.startsWith('chrome-extension://') &&
+      details.resourceType === 'mainFrame' &&
+      typeof details.webContentsId === 'number'
+    ) {
+      const wc = electronWebContents.fromId(details.webContentsId)
+      if (wc && !wc.isDestroyed()) {
+        const target = redirectUrl
+        queueMicrotask(() => {
+          if (!wc.isDestroyed()) {
+            void wc.loadURL(target).catch((err) => {
+              console.warn('[webRequest] DNR redirect loadURL failed:', err?.message || err)
+            })
+          }
+        })
+        return { cancel: true }
+      }
+    }
+
+    // main_frame cancel is unreliable; clear the tab if the blocked URL still commits
+    if (
+      dnrResult.cancel === true &&
+      details.resourceType === 'mainFrame' &&
+      typeof details.webContentsId === 'number'
+    ) {
+      const wc = electronWebContents.fromId(details.webContentsId)
+      if (wc && !wc.isDestroyed()) {
+        const blockedUrl = details.url
+        queueMicrotask(() => {
+          if (wc.isDestroyed()) return
+          try {
+            const current = wc.getURL()
+            if (
+              !current ||
+              current === 'about:blank' ||
+              current === blockedUrl ||
+              originsMatch(current, blockedUrl)
+            ) {
+              void wc.loadURL('about:blank')
+            }
+          } catch {
+            void wc.loadURL('about:blank')
+          }
+        })
+      }
+      return { cancel: true }
+    }
+
+    if (dnrResult.cancel === true) return { cancel: true }
+    if (redirectUrl) return { redirectUrl }
+    return dnrResult
   }
 
   private extractAuthCredentialsFromBlockingResult(
@@ -888,7 +1000,7 @@ export class WebRequestAPI {
       // Electron onBeforeRequest only honors cancel/redirect. Header mutations
       // from modifyHeaders are applied in the sendHeaders / headersReceived stages.
       if (dnrResult?.cancel === true || typeof dnrResult?.redirectUrl === 'string') {
-        return dnrResult
+        return this.applyDnrBeforeRequestResult(details, dnrResult)
       }
     }
 
@@ -1145,6 +1257,36 @@ export class WebRequestAPI {
         this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onHeadersReceived', filtered)
       }
     })
+  }
+
+  async notifyOnBeforeRedirect(
+    details: Electron.OnBeforeRedirectListenerDetails,
+  ): Promise<void> {
+    const url = details.url
+    if (!url) return
+
+    const payloadBase: WebRequestDetails = {
+      ...this.buildDetails(details as unknown as ElectronRequestDetails),
+      redirectUrl: details.redirectURL,
+      statusCode: (details as any).statusCode,
+      responseHeaders: details.responseHeaders as any,
+      ip: (details as any).ip,
+      fromCache: (details as any).fromCache,
+    }
+
+    const matching = this.findMatchingListeners(this.onBeforeRedirectListeners, payloadBase)
+    if (matching.length === 0) return
+
+    const requestId = payloadBase.requestId || `wr-${++this.requestIdCounter}`
+    const payloadWithId = { ...payloadBase, requestId }
+
+    for (const entry of matching) {
+      const filtered = this.filterDetailsForListener(payloadWithId, entry.extraInfoSpec)
+      this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onBeforeRedirect', {
+        ...filtered,
+        redirectUrl: payloadBase.redirectUrl,
+      })
+    }
   }
 
   async notifyOnResponseStarted(
