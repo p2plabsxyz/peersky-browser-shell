@@ -488,6 +488,7 @@ export const injectExtensionAPIs = () => {
             updateSessionRules: invokeExtension('declarativeNetRequest.updateSessionRules'),
             getEnabledRulesets: invokeExtension('declarativeNetRequest.getEnabledRulesets'),
             updateEnabledRulesets: invokeExtension('declarativeNetRequest.updateEnabledRulesets'),
+            updateStaticRules: invokeExtension('declarativeNetRequest.updateStaticRules'),
             isRegexSupported: invokeExtension('declarativeNetRequest.isRegexSupported'),
             getMatchedRules: invokeExtension('declarativeNetRequest.getMatchedRules'),
           }
@@ -820,11 +821,21 @@ export const injectExtensionAPIs = () => {
             QUOTA_BYTES: 10485760,
           }
 
+          const ipcManaged = {
+            get: cbWrapStorageGet(invokeExtension('storage.managed.get')),
+            onChanged: {
+              addListener: () => {},
+              removeListener: () => {},
+              hasListener: () => false,
+              hasListeners: () => false,
+            },
+          }
+
           return {
             ...base,
             onChanged,
             local: ipcLocal,
-            managed: ipcLocal,
+            managed: ipcManaged,
             session: (base as any)?.session || ipcLocal,
             sync: {
               ...(base as any)?.sync ?? ipcLocal,
@@ -907,6 +918,8 @@ export const injectExtensionAPIs = () => {
       },
 
       webNavigation: {
+        shouldInject: () =>
+          !!(manifest.permissions as string[] | undefined)?.includes('webNavigation'),
         factory: (base) => {
           return {
             ...base,
@@ -964,6 +977,10 @@ export const injectExtensionAPIs = () => {
           const onSendHeadersEvent = new ExtensionEvent<
             (details: chrome.webRequest.WebRequestHeadersDetails) => void
           >('webRequest.onSendHeaders')
+
+          const onBeforeRedirectEvent = new ExtensionEvent<
+            (details: chrome.webRequest.WebRedirectionResponseDetails) => void
+          >('webRequest.onBeforeRedirect')
 
           const onResponseStartedEvent = new ExtensionEvent<
             (details: chrome.webRequest.WebResponseCacheDetails) => void
@@ -1230,6 +1247,35 @@ export const injectExtensionAPIs = () => {
               },
               hasListeners() {
                 return onHeadersReceivedEvent.hasListeners()
+              },
+            },
+            onBeforeRedirect: {
+              addListener(
+                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
+                filter: chrome.webRequest.RequestFilter,
+                extraInfoSpec?: string[],
+              ) {
+                invokeExtension('webRequest.addOnBeforeRedirectListener')(
+                  filter,
+                  extraInfoSpec,
+                )
+                onBeforeRedirectEvent.addListener(callback)
+              },
+              removeListener(
+                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
+              ) {
+                onBeforeRedirectEvent.removeListener(callback)
+                if (!onBeforeRedirectEvent.hasListeners()) {
+                  invokeExtension('webRequest.removeOnBeforeRedirectListener')().catch(() => {})
+                }
+              },
+              hasListener(
+                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
+              ) {
+                return onBeforeRedirectEvent.hasListener(callback)
+              },
+              hasListeners() {
+                return onBeforeRedirectEvent.hasListeners()
               },
             },
             onResponseStarted: {

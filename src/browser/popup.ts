@@ -171,6 +171,19 @@ export class PopupView extends EventEmitter {
     if (this.usingPreferredSize) {
       // Set small initial size so the preferred size grows to what's needed
       this.setSize({ width: PopupView.BOUNDS.minWidth, height: PopupView.BOUNDS.minHeight })
+
+      // Extension panels that mount UI asynchronously may not emit preferred-size-changed.
+      win.webContents.once('did-finish-load', () => {
+        const tryMeasure = (attempt = 0) => {
+          if (this.destroyed || !this.hidden || attempt > 8) return
+          void this.measureContentSize().then(() => {
+            if (!this.destroyed && this.hidden) {
+              setTimeout(() => tryMeasure(attempt + 1), 150)
+            }
+          })
+        }
+        setTimeout(() => tryMeasure(), 100)
+      })
     } else {
       // Set large initial size to avoid overflow
       this.setSize({ width: PopupView.BOUNDS.maxWidth, height: PopupView.BOUNDS.maxHeight })
@@ -317,10 +330,21 @@ export class PopupView extends EventEmitter {
   private async queryPreferredSize() {
     if (this.usingPreferredSize || this.destroyed) return
 
-    const rect = await this.browserWindow!.webContents.executeJavaScript(
+    await this.measureContentSize()
+  }
+
+  private async measureContentSize() {
+    if (this.destroyed || !this.browserWindow) return
+
+    const rect = await this.browserWindow.webContents.executeJavaScript(
       `((${() => {
-        const rect = document.body.getBoundingClientRect()
-        return { width: rect.width, height: rect.height }
+        const el = document.documentElement
+        const body = document.body
+        const bodyRect = body?.getBoundingClientRect()
+        return {
+          width: Math.max(el?.scrollWidth || 0, body?.scrollWidth || 0, bodyRect?.width || 0),
+          height: Math.max(el?.scrollHeight || 0, body?.scrollHeight || 0, bodyRect?.height || 0),
+        }
       }})())`,
     )
 
@@ -328,6 +352,7 @@ export class PopupView extends EventEmitter {
 
     this.setSize({ width: rect.width, height: rect.height })
     this.updatePosition()
+    if (this.hidden) this.show()
   }
 
   private updatePreferredSize = (event: Electron.Event, size: Electron.Size) => {

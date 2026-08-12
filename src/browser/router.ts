@@ -221,6 +221,18 @@ const eventListenerEquals = (a: EventListener) => (b: EventListener) => {
   return true
 }
 
+/**
+ * Events where delaying SW delivery by 200ms can miss first paint / scriptlets.
+ * Only speeds up delivery when a listener is already registered — never wakes idle SWs.
+ */
+function isUrgentNavigationEvent(eventName: string) {
+  return (
+    eventName.startsWith('webNavigation.') ||
+    eventName === 'webRequest.onResponseStarted' ||
+    eventName === 'webRequest.onBeforeRedirect'
+  )
+}
+
 export class ExtensionRouter {
   private handlers: HandlerMap = new Map()
   private listeners: Map<EventName, EventListener[]> = new Map()
@@ -332,6 +344,45 @@ export class ExtensionRouter {
     }
   }
 
+  private deliverToServiceWorkerOrHost(
+    listener: EventListener,
+    extensionId: string,
+    ipcName: string,
+    args: any[],
+    delayMs: number,
+  ) {
+    if (listener.type === 'service-worker') {
+      const scope = `chrome-extension://${extensionId}/`
+      const argsCopy = [...args]
+      this.session.serviceWorkers
+        .startWorkerForScope(scope)
+        .then((serviceWorker) => {
+          const send = () => {
+            if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
+            try {
+              serviceWorker.send(ipcName, ...argsCopy)
+            } catch (err) {
+              d('service worker send failed for %s: %o', ipcName, err)
+            }
+          }
+          if (delayMs > 0) setTimeout(send, delayMs)
+          else send()
+        })
+        .catch((error) => {
+          d('failed to send %s to %s', ipcName, extensionId)
+          console.error(error)
+        })
+      return
+    }
+
+    if (listener.host.isDestroyed()) return
+    try {
+      listener.host.send(ipcName, ...args)
+    } catch (err) {
+      d('send %s to extension %s failed: %o', ipcName, extensionId, err)
+    }
+  }
+
   removeListener(listener: EventListener, extensionId: string, eventName: string) {
     const { listeners } = this
 
@@ -439,6 +490,7 @@ export class ExtensionRouter {
     const { listeners } = this
     const eventListeners = listeners.get(eventName)
     const ipcName = `crx-${eventName}`
+    const swDelayMs = isUrgentNavigationEvent(eventName) ? 0 : 200
 
     if (!eventListeners || eventListeners.length === 0) {
       d(`sendEvent: no listeners for '${eventName}' (extension: ${targetExtensionId ?? 'any'})`)
@@ -460,25 +512,7 @@ export class ExtensionRouter {
 
       if (type === 'service-worker') {
         serviceWorkerAsync++
-        const scope = `chrome-extension://${extensionId}/`
-        const argsCopy = [...args]
-        this.session.serviceWorkers
-          .startWorkerForScope(scope)
-          .then((serviceWorker) => {
-            setTimeout(() => {
-              if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
-              try {
-                serviceWorker.send(ipcName, ...argsCopy)
-                d(`delivered '${eventName}' to service worker [${extensionId}]`)
-              } catch (err) {
-                d('service worker send failed for %s: %o', eventName, err)
-              }
-            }, 200)
-          })
-          .catch((error) => {
-            d('failed to send %s to %s', eventName, extensionId)
-            console.error(error)
-          })
+        this.deliverToServiceWorkerOrHost(listener, extensionId, ipcName, args, swDelayMs)
       } else {
         if (listener.host.isDestroyed()) {
           deadListeners.push(listener)
@@ -515,8 +549,8 @@ export class ExtensionRouter {
         `sendEvent '${eventName}': ${sentCount} frame host(s); ${serviceWorkerAsync} service worker delivery(s) scheduled`,
       )
     } else {
-    d(`sent '${eventName}' event to ${sentCount} listeners`)
-  }
+      d(`sent '${eventName}' event to ${sentCount} listeners`)
+    }
   }
 
   /**
@@ -527,6 +561,7 @@ export class ExtensionRouter {
     const { listeners } = this
     const eventListeners = listeners.get(eventName)
     const ipcName = `crx-${eventName}`
+    const swDelayMs = isUrgentNavigationEvent(eventName) ? 0 : 200
 
     if (!eventListeners || eventListeners.length === 0) {
       d(`sendEventForEachListener: no listeners for '${eventName}'`)
@@ -542,25 +577,7 @@ export class ExtensionRouter {
 
       if (type === 'service-worker') {
         serviceWorkerAsync++
-        const scope = `chrome-extension://${extensionId}/`
-        const argsCopy = [...args]
-        this.session.serviceWorkers
-          .startWorkerForScope(scope)
-          .then((serviceWorker) => {
-            setTimeout(() => {
-              if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
-              try {
-                serviceWorker.send(ipcName, ...argsCopy)
-                d(`delivered '${eventName}' to service worker [${extensionId}]`)
-              } catch (err) {
-                d('service worker send failed for %s: %o', eventName, err)
-              }
-            }, 200)
-          })
-          .catch((error) => {
-            d('failed to send %s to %s', eventName, extensionId)
-            console.error(error)
-          })
+        this.deliverToServiceWorkerOrHost(listener, extensionId, ipcName, args, swDelayMs)
       } else {
         if (listener.host.isDestroyed()) {
           deadListeners.push(listener)

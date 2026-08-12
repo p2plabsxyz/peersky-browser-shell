@@ -16,11 +16,27 @@ function resolveFrame(tab: Electron.WebContents, frameIds?: number[]): Electron.
   const main = (tab as Electron.WebContents & { mainFrame: Electron.WebFrameMain }).mainFrame
   if (!main || main.isDestroyed()) return null
 
+  // Missing frameId → null (don't fall back to main frame).
   const fid = frameIds?.[0]
   if (fid == null || fid === 0) return main
 
   const hit = main.framesInSubtree.find((f) => frameId(f) === fid)
-  return hit ?? main
+  return hit && !hit.isDestroyed() ? hit : null
+}
+
+function resolveInjectionFrame(
+  tab: Electron.WebContents,
+  target: { frameIds?: number[]; documentIds?: string[] } | undefined,
+  resolveDocId: (documentId: string) => { tabId: number; frameId: number } | undefined,
+  expectedTabId: number,
+): Electron.WebFrameMain | null {
+  const documentIds = target?.documentIds
+  if (Array.isArray(documentIds) && typeof documentIds[0] === 'string') {
+    const resolved = resolveDocId(documentIds[0])
+    if (!resolved || resolved.tabId !== expectedTabId) return null
+    return resolveFrame(tab, [resolved.frameId])
+  }
+  return resolveFrame(tab, target?.frameIds)
 }
 
 export class ScriptingAPI {
@@ -292,8 +308,16 @@ export class ScriptingAPI {
       throw new Error(`No tab with id: ${tabId}`)
     }
 
-    const frame = resolveFrame(tab, injection?.target?.frameIds as number[] | undefined)
-    if (frame && frame.top && frame !== frame.top) {
+    const frame = resolveInjectionFrame(
+      tab,
+      injection?.target,
+      (id) => this.ctx.store.resolveByDocumentId(id),
+      tabId,
+    )
+    if (!frame || frame.isDestroyed()) {
+      throw new Error('insertCSS: frame not available')
+    }
+    if (frame.top && frame !== frame.top) {
       const code = `(function(){var e=document.createElement('style');e.textContent=${JSON.stringify(css)};(document.head||document.documentElement).appendChild(e);})()`
       await frame.executeJavaScript(code, true)
       return
@@ -302,7 +326,10 @@ export class ScriptingAPI {
     await tab.insertCSS(css)
   }
 
-  private async executeScript(_event: ExtensionEvent, injection: any): Promise<{ result?: unknown }[]> {
+  private async executeScript(
+    _event: ExtensionEvent,
+    injection: any,
+  ): Promise<{ documentId?: string; frameId?: number; result?: unknown }[]> {
     const tabId = injection?.target?.tabId
     if (typeof tabId !== 'number') {
       throw new Error('executeScript: target.tabId is required')
@@ -319,23 +346,36 @@ export class ScriptingAPI {
       throw new Error('executeScript: func is required')
     }
     const args = Array.isArray(injection.args) ? injection.args : []
-    const frame = resolveFrame(tab, injection?.target?.frameIds as number[] | undefined)
+    const frame = resolveInjectionFrame(
+      tab,
+      injection?.target,
+      (id) => this.ctx.store.resolveByDocumentId(id),
+      tabId,
+    )
     if (!frame || frame.isDestroyed()) {
       throw new Error('executeScript: frame not available')
     }
 
+    const resolvedFrameId = frameId(frame)
+    const documentId =
+      this.ctx.store.getDocumentId(tabId, resolvedFrameId) ||
+      this.ctx.store.newDocumentId(tabId, resolvedFrameId)
+
     const code = `(function(){ const __a = ${JSON.stringify(args)}; var fn = ${funcSrc}; return fn.apply(null, __a); })()`
 
     const world = injection.world
-    // Chrome defaults to ISOLATED; MAIN must be explicit.
     const isolated = world !== 'MAIN' && world !== 1
 
-    if (isolated && frame === frame.top && typeof tab.executeJavaScriptInIsolatedWorld === 'function') {
-      const out = await tab.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }], true)
-      return [{ result: out }]
+    if (isolated) {
+      // Isolated world only works on the top frame in Electron.
+      if (frame === frame.top && typeof tab.executeJavaScriptInIsolatedWorld === 'function') {
+        const out = await tab.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }], true)
+        return [{ documentId, frameId: resolvedFrameId, result: out }]
+      }
+      throw new Error('executeScript: ISOLATED world is unavailable for this frame')
     }
 
     const result = await frame.executeJavaScript(code, true)
-    return [{ result }]
+    return [{ documentId, frameId: resolvedFrameId, result }]
   }
 }

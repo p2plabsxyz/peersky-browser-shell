@@ -44,6 +44,7 @@ export class StorageSyncAPI {
     handle('storage.local.remove', this.localRemove, { permission: 'storage' })
     handle('storage.local.clear', this.localClear, { permission: 'storage' })
     handle('storage.local.getBytesInUse', this.localGetBytesInUse, { permission: 'storage' })
+    handle('storage.managed.get', this.managedGet, { permission: 'storage' })
   }
 
   private enqueueSync<T>(extensionId: string, fn: () => Promise<T>): Promise<T> {
@@ -407,5 +408,31 @@ export class StorageSyncAPI {
       const result = await this.localGetImpl({ extension } as ExtensionEvent, keys)
       return Buffer.byteLength(JSON.stringify(result))
     })
+  }
+
+  /** Enterprise policy: read `managedConfig` from extension local storage (Peersky bootstrap). */
+  private managedGet = async (
+    { extension }: ExtensionEvent,
+    keys?: string | string[] | Record<string, unknown> | null,
+  ) => {
+    const data = await this.localLoad(extension.id)
+    const policy =
+      data.managedConfig && typeof data.managedConfig === 'object'
+        ? Object.assign(Object.create(null), data.managedConfig as Record<string, unknown>)
+        : Object.create(null)
+    if (keys == null) return { ...policy }
+    const result: Record<string, unknown> = Object.create(null)
+    if (typeof keys === 'string') {
+      if (Object.prototype.hasOwnProperty.call(policy, keys)) result[keys] = policy[keys]
+    } else if (Array.isArray(keys)) {
+      for (const k of keys) {
+        if (Object.prototype.hasOwnProperty.call(policy, k)) result[k] = policy[k]
+      }
+    } else {
+      for (const [k, defaultVal] of Object.entries(keys)) {
+        result[k] = Object.prototype.hasOwnProperty.call(policy, k) ? policy[k] : defaultVal
+      }
+    }
+    return result
   }
 }

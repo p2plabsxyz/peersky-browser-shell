@@ -28,16 +28,32 @@ export class ExtensionStore extends EventEmitter {
   tabDetailsCache = new Map<number, Partial<chrome.tabs.Tab>>()
   windowDetailsCache = new Map<number, Partial<chrome.windows.Window>>()
 
+  /** tabId:frameId → documentId */
   private documentIdMap = new Map<string, string>()
+  /** documentId → { tabId, frameId } for chrome.scripting target.documentIds */
+  private documentIdReverseMap = new Map<string, { tabId: number; frameId: number }>()
 
   newDocumentId(tabId: number, frameId: number): string {
+    const key = `${tabId}:${frameId}`
+    const prev = this.documentIdMap.get(key)
+    if (prev) this.documentIdReverseMap.delete(prev)
+
     const id = randomUUID().replace(/-/g, '').toUpperCase()
-    this.documentIdMap.set(`${tabId}:${frameId}`, id)
+    this.documentIdMap.set(key, id)
+    this.documentIdReverseMap.set(id, { tabId, frameId })
     return id
   }
 
   getDocumentId(tabId: number, frameId: number): string | undefined {
     return this.documentIdMap.get(`${tabId}:${frameId}`)
+  }
+
+  /** Resolve chrome.scripting target.documentIds to tab/frame. */
+  resolveByDocumentId(
+    documentId: string,
+  ): { tabId: number; frameId: number } | undefined {
+    if (!documentId || typeof documentId !== 'string') return undefined
+    return this.documentIdReverseMap.get(documentId)
   }
 
   urlOverrides: Record<string, string> = {}
@@ -159,8 +175,11 @@ export class ExtensionStore extends EventEmitter {
     this.tabs.delete(tab)
     this.tabToWindow.delete(tab)
 
-    for (const key of this.documentIdMap.keys()) {
-      if (key.startsWith(`${tabId}:`)) this.documentIdMap.delete(key)
+    for (const key of [...this.documentIdMap.keys()]) {
+      if (!key.startsWith(`${tabId}:`)) continue
+      const docId = this.documentIdMap.get(key)
+      if (docId) this.documentIdReverseMap.delete(docId)
+      this.documentIdMap.delete(key)
     }
 
     // Clear window if it has no remaining tabs

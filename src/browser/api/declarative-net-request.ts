@@ -1,11 +1,15 @@
-import { promises as fs } from 'node:fs'
+import { app } from 'electron'
+import { promises as fs, existsSync } from 'node:fs'
 import path from 'node:path'
 
-import { parseFilter, matchesFilter, elementTypes } from 'abp-filter-parser'
 import { getDomain } from 'tldts'
 
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
+import {
+  chromeUrlFilterHostKeyForIndex,
+  matchDeclarativeNetRequestUrlFilter,
+} from './chrome-dnr-url-filter'
 import type { WebRequestBlockingResponse, WebRequestDetails } from './web-request'
 
 type DNRRule = chrome.declarativeNetRequest.Rule
@@ -17,14 +21,20 @@ interface InternalRule {
   priority: number
   action: chrome.declarativeNetRequest.RuleAction
   hostKey: string | null
-  parsedUrlFilter: Record<string, unknown> | null
+  /** Raw Chrome `urlFilter` string (MV3 semantics — not ABP). */
+  urlFilter: string | null
+  isUrlFilterCaseSensitive: boolean
   regex: RegExp | null
   condition: RuleCondition
+  /** Static ruleset this rule was loaded from (for updateStaticRules). */
+  rulesetId?: string
 }
 
 interface ExtensionDNRState {
   staticByRuleset: Map<string, InternalRule[]>
   enabledRulesets: Set<string>
+  /** Per-ruleset static rule ids disabled via updateStaticRules. */
+  disabledStaticRuleIds: Map<string, Set<number>>
   dynamicRules: Map<number, InternalRule>
   sessionRules: Map<number, InternalRule>
 }
@@ -33,37 +43,99 @@ function getSessionExtensions(session: Electron.Session) {
   return session.extensions || session
 }
 
-function resourceTypeToElementMask(resourceType: string | undefined): number {
-  switch (resourceType) {
-    case 'main_frame':
-      return elementTypes.DOCUMENT
-    case 'sub_frame':
-      return elementTypes.SUBDOCUMENT
-    case 'script':
-      return elementTypes.SCRIPT
-    case 'image':
-    case 'img':
-      return elementTypes.IMAGE
-    case 'stylesheet':
-      return elementTypes.STYLESHEET
-    case 'xmlhttprequest':
-    case 'xhr':
-      return elementTypes.XMLHTTPREQUEST
-    case 'object':
-      return elementTypes.OBJECT
-    default:
-      return elementTypes.OTHER
-  }
-}
-
+/** Match resourceTypes / excludedResourceTypes; omit both ⇒ all except main_frame. */
 function dnrResourceTypeMatches(
-  conditionTypes: chrome.declarativeNetRequest.ResourceType[] | undefined,
+  condition: RuleCondition,
   normalizedType: string | undefined,
 ): boolean {
-  if (!conditionTypes || conditionTypes.length === 0) return true
   const t = normalizedType || 'other'
   const mapped = t === 'img' ? 'image' : t
-  return conditionTypes.some((ct) => ct === mapped || (ct === 'image' && t === 'img'))
+
+  const included = condition.resourceTypes
+  if (included?.length) return included.some((ct) => ct === mapped)
+
+  const excluded = (condition as RuleCondition & {
+    excludedResourceTypes?: chrome.declarativeNetRequest.ResourceType[]
+  }).excludedResourceTypes
+  if (excluded?.length) return !excluded.some((ct) => ct === mapped)
+
+  return mapped !== 'main_frame'
+}
+
+type UrlTransform = {
+  scheme?: string
+  host?: string
+  port?: string
+  path?: string
+  query?: string
+  queryTransform?: {
+    addOrReplaceParams?: { key: string; value: string; replaceOnly?: boolean }[]
+    removeParams?: string[]
+  }
+  fragment?: string
+  username?: string
+  password?: string
+}
+
+/** Apply queryTransform without re-encoding untouched pairs. */
+function applyQueryTransform(
+  search: string,
+  queryTransform: NonNullable<UrlTransform['queryTransform']>,
+): string {
+  const raw = search.startsWith('?') ? search.slice(1) : search
+  let pairs = raw.length > 0 ? raw.split('&') : []
+  const keyOf = (pair: string) => {
+    const eq = pair.indexOf('=')
+    return eq === -1 ? pair : pair.slice(0, eq)
+  }
+
+  const removeParams = queryTransform.removeParams
+  if (removeParams?.length) {
+    const drop = new Set(removeParams)
+    pairs = pairs.filter((pair) => !drop.has(keyOf(pair)))
+  }
+
+  for (const param of queryTransform.addOrReplaceParams ?? []) {
+    if (!param?.key) continue
+    const next = `${param.key}=${param.value ?? ''}`
+    const at = pairs.findIndex((pair) => keyOf(pair) === param.key)
+    if (at !== -1) {
+      pairs[at] = next
+      pairs = pairs.filter((pair, i) => i === at || keyOf(pair) !== param.key)
+    } else if (!param.replaceOnly) {
+      pairs.push(next)
+    }
+  }
+
+  return pairs.length > 0 ? `?${pairs.join('&')}` : ''
+}
+
+/** Apply redirect.transform. Returns null if nothing changed. */
+function applyUrlTransform(requestUrl: string, transform: UrlTransform): string | null {
+  let u: URL
+  try {
+    u = new URL(requestUrl)
+  } catch {
+    return null
+  }
+
+  if (transform.scheme) u.protocol = `${transform.scheme}:`
+  if (transform.username != null) u.username = transform.username
+  if (transform.password != null) u.password = transform.password
+  if (transform.host) u.hostname = transform.host
+  if (transform.port != null) u.port = transform.port
+  if (transform.path != null) u.pathname = transform.path
+
+  if (transform.query != null) {
+    u.search = transform.query
+  } else if (transform.queryTransform) {
+    u.search = applyQueryTransform(u.search, transform.queryTransform)
+  }
+
+  if (transform.fragment != null) u.hash = transform.fragment
+
+  const next = u.href
+  return next === requestUrl ? null : next
 }
 
 function hostMatchesDomainList(
@@ -105,22 +177,20 @@ function sameRegistrableDomain(hostnameA: string, hostnameB: string): boolean {
   return da != null && db != null && da === db
 }
 
-/**
- * Electron often lacks Referer; without a reliable initiator, Ghostery-style rules can
- * block same-site scripts/XHR. Chrome applies DNR in a document-aware pipeline; we
- * approximate by not cancelling "block" for same-site subresources (non top-level doc).
- */
-function shouldSkipNetworkBlockAsSameSite(
+/** Chrome `RuleCondition.domainType`: first vs third party by registrable domain of URL vs initiator. */
+function domainTypeMatches(
+  domainType: string | undefined,
   requestUrl: string,
   initiatorUrl: string | undefined,
-  resourceType: string | undefined,
 ): boolean {
-  if (resourceType === 'main_frame') return false
-  if (!initiatorUrl) return false
+  if (domainType == null) return true
   const rh = safeHostname(requestUrl)
-  const ih = safeHostname(initiatorUrl)
+  const ih = initiatorUrl ? safeHostname(initiatorUrl) : ''
   if (!rh || !ih) return false
-  return sameRegistrableDomain(rh, ih)
+  const sameSite = sameRegistrableDomain(rh, ih)
+  if (domainType === 'thirdParty') return !sameSite
+  if (domainType === 'firstParty') return sameSite
+  return true
 }
 
 function extensionIdFromInitiatorUrl(initiatorUrl: string | undefined): string | undefined {
@@ -158,11 +228,11 @@ function conditionMatchesRequest(
     type: string
     initiator?: string
   },
-  elementTypeMask: number,
-  parsedUrlFilter: Record<string, unknown> | null,
+  urlFilter: string | null,
+  isUrlFilterCaseSensitive: boolean,
   regex: RegExp | null,
 ): boolean {
-  if (!dnrResourceTypeMatches(condition.resourceTypes, details.type)) return false
+  if (!dnrResourceTypeMatches(condition, details.type)) return false
 
   if (condition.requestMethods?.length) {
     const m = (details.method || 'GET').toLowerCase()
@@ -172,6 +242,9 @@ function conditionMatchesRequest(
   if (condition.tabIds?.length) {
     if (!condition.tabIds.includes(details.tabId)) return false
   }
+
+  const condDomainType = (condition as RuleCondition & { domainType?: string }).domainType
+  if (!domainTypeMatches(condDomainType, details.url, details.initiator)) return false
 
   const reqHost = safeHostname(details.url)
 
@@ -199,8 +272,16 @@ function conditionMatchesRequest(
 
   if (regex) {
     if (!regex.test(details.url)) return false
-  } else if (parsedUrlFilter) {
-    if (!matchesFilter(parsedUrlFilter, details.url, { elementTypeMask })) return false
+  } else if (urlFilter) {
+    if (
+      !matchDeclarativeNetRequestUrlFilter(
+        urlFilter,
+        details.url,
+        isUrlFilterCaseSensitive,
+      )
+    ) {
+      return false
+    }
   }
 
   return true
@@ -209,7 +290,8 @@ function conditionMatchesRequest(
 function compileRule(extensionId: string, rule: DNRRule): InternalRule | null {
   const priority = rule.priority ?? 1
   const c = rule.condition
-  let parsedUrlFilter: Record<string, unknown> | null = null
+  let urlFilter: string | null = null
+  let isUrlFilterCaseSensitive = false
   let regex: RegExp | null = null
   let hostKey: string | null = null
 
@@ -220,12 +302,9 @@ function compileRule(extensionId: string, rule: DNRRule): InternalRule | null {
       return null
     }
   } else if (c.urlFilter) {
-    const parsed: Record<string, unknown> = {}
-    if (!parseFilter(c.urlFilter, parsed)) return null
-    parsedUrlFilter = parsed
-    if (parsed.hostAnchored && typeof parsed.host === 'string') {
-      hostKey = parsed.host as string
-    }
+    urlFilter = c.urlFilter
+    isUrlFilterCaseSensitive = !!(c as { isUrlFilterCaseSensitive?: boolean }).isUrlFilterCaseSensitive
+    hostKey = chromeUrlFilterHostKeyForIndex(c.urlFilter)
   }
 
   return {
@@ -234,7 +313,8 @@ function compileRule(extensionId: string, rule: DNRRule): InternalRule | null {
     priority,
     action: rule.action,
     hostKey,
-    parsedUrlFilter,
+    urlFilter,
+    isUrlFilterCaseSensitive,
     regex,
     condition: c,
   }
@@ -266,10 +346,38 @@ function isRegexSupportedChromeSubset(regex: string): { isSupported: boolean; re
   }
 }
 
+function dnrPersistDir(): string {
+  return path.join(app.getPath('userData'), 'DNR Extension Rules')
+}
+
 export class DeclarativeNetRequestAPI {
   private byExtension = new Map<string, ExtensionDNRState>()
   private hostIndex = new Map<string, InternalRule[]>()
   private genericRules: InternalRule[] = []
+
+  private enabledRulesetsPath(extensionId: string): string {
+    return path.join(dnrPersistDir(), extensionId, 'enabled_rulesets.json')
+  }
+
+  private async loadPersistedEnabledRulesets(extensionId: string): Promise<string[]> {
+    try {
+      const raw = await fs.readFile(this.enabledRulesetsPath(extensionId), 'utf8')
+      const parsed = JSON.parse(raw)
+      return Array.isArray(parsed) ? parsed.filter((id) => typeof id === 'string') : []
+    } catch {
+      return []
+    }
+  }
+
+  private async persistEnabledRulesets(extensionId: string, enabled: Set<string>): Promise<void> {
+    const dir = path.join(dnrPersistDir(), extensionId)
+    await fs.mkdir(dir, { recursive: true })
+    await fs.writeFile(
+      this.enabledRulesetsPath(extensionId),
+      JSON.stringify([...enabled]),
+      'utf8',
+    )
+  }
 
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
@@ -289,6 +397,9 @@ export class DeclarativeNetRequestAPI {
       permission: 'declarativeNetRequest',
     })
     handle('declarativeNetRequest.updateEnabledRulesets', this.updateEnabledRulesets, {
+      permission: 'declarativeNetRequest',
+    })
+    handle('declarativeNetRequest.updateStaticRules', this.updateStaticRules, {
       permission: 'declarativeNetRequest',
     })
     handle('declarativeNetRequest.isRegexSupported', this.isRegexSupported, {
@@ -312,6 +423,10 @@ export class DeclarativeNetRequestAPI {
     })
 
     sessionExtensions.on('extension-unloaded', (_event, extension: Electron.Extension) => {
+      const state = this.byExtension.get(extension.id)
+      if (state?.enabledRulesets.size) {
+        void this.persistEnabledRulesets(extension.id, state.enabledRulesets)
+      }
       this.byExtension.delete(extension.id)
       this.rebuildGlobalIndexes()
     })
@@ -323,6 +438,7 @@ export class DeclarativeNetRequestAPI {
       s = {
         staticByRuleset: new Map(),
         enabledRulesets: new Set(),
+        disabledStaticRuleIds: new Map(),
         dynamicRules: new Map(),
         sessionRules: new Map(),
       }
@@ -334,10 +450,41 @@ export class DeclarativeNetRequestAPI {
   private async loadExtensionRules(extension: Electron.Extension) {
     const manifest = extension.manifest as chrome.runtime.ManifestV3
     const dnr = manifest.declarative_net_request
-    if (!dnr?.rule_resources?.length) return
+    if (!dnr?.rule_resources?.length) {
+      return
+    }
 
     const state = this.ensureState(extension.id)
     state.staticByRuleset.clear()
+
+    // Restore rulesets enabled via updateEnabledRulesets (survives SW reload / extension reload).
+    const persisted = await this.loadPersistedEnabledRulesets(extension.id)
+    for (const id of persisted) {
+      state.enabledRulesets.add(id)
+    }
+
+    // Pre-populate enabled rulesets from manifest defaults (Chrome behavior).
+    for (const res of dnr.rule_resources) {
+      if (res.enabled) state.enabledRulesets.add(res.id)
+    }
+
+    // If no rulesets are enabled yet, and the extension has the
+    // declarativeNetRequest permission, auto-enable ALL rulesets.
+    // This is necessary because some extensions (like Ghostery)
+    // set all rulesets to enabled:false and rely on their background
+    // service worker to call updateEnabledRulesets().  In Electron,
+    // MV3 service workers may never start, so we enable everything
+    // here as a safe default — the extension can still call
+    // updateEnabledRulesets() later to disable unwanted ones.
+    if (state.enabledRulesets.size === 0) {
+      // manifest is already typed as chrome.runtime.ManifestV3 (see above)
+      const perms = manifest.permissions
+      if (Array.isArray(perms) && (perms.includes('declarativeNetRequest') || perms.includes('declarativeNetRequestWithHostAccess'))) {
+        for (const res of dnr.rule_resources) {
+          state.enabledRulesets.add(res.id)
+        }
+      }
+    }
 
     for (const res of dnr.rule_resources) {
       try {
@@ -349,7 +496,10 @@ export class DeclarativeNetRequestAPI {
         const compiled: InternalRule[] = []
         for (const rule of arr) {
           const c = compileRule(extension.id, rule)
-          if (c) compiled.push(c)
+          if (c) {
+            c.rulesetId = res.id
+            compiled.push(c)
+          }
         }
         state.staticByRuleset.set(res.id, compiled)
       } catch (e) {
@@ -363,6 +513,36 @@ export class DeclarativeNetRequestAPI {
     this.rebuildGlobalIndexes()
   }
 
+  private isStaticRuleDisabled(state: ExtensionDNRState, rule: InternalRule): boolean {
+    if (!rule.rulesetId) return false
+    return state.disabledStaticRuleIds.get(rule.rulesetId)?.has(rule.id) ?? false
+  }
+
+  /** Index a rule for host-bucket lookup (urlFilter host, requestDomains, or generic). */
+  private addRuleToHostIndex(r: InternalRule) {
+    const reqDomains = (r.condition as RuleCondition & { requestDomains?: string[] })
+      .requestDomains
+
+    if (reqDomains?.length && !r.urlFilter && !r.regex) {
+      for (const domain of reqDomains) {
+        const key = domain.toLowerCase()
+        const list = this.hostIndex.get(key) || []
+        list.push(r)
+        this.hostIndex.set(key, list)
+      }
+      return
+    }
+
+    if (r.hostKey) {
+      const list = this.hostIndex.get(r.hostKey) || []
+      list.push(r)
+      this.hostIndex.set(r.hostKey, list)
+      return
+    }
+
+    this.genericRules.push(r)
+  }
+
   private rebuildGlobalIndexes() {
     this.hostIndex.clear()
     this.genericRules = []
@@ -371,19 +551,19 @@ export class DeclarativeNetRequestAPI {
       const rules: InternalRule[] = []
       for (const rulesetId of state.enabledRulesets) {
         const chunk = state.staticByRuleset.get(rulesetId)
-        if (chunk) rules.push(...chunk)
+        if (chunk) {
+          for (const rule of chunk) {
+            if (!this.isStaticRuleDisabled(state, rule)) {
+              rules.push(rule)
+            }
+          }
+        }
       }
       rules.push(...state.dynamicRules.values())
       rules.push(...state.sessionRules.values())
 
       for (const r of rules) {
-        if (r.hostKey) {
-          const list = this.hostIndex.get(r.hostKey) || []
-          list.push(r)
-          this.hostIndex.set(r.hostKey, list)
-        } else {
-          this.genericRules.push(r)
-        }
+        this.addRuleToHostIndex(r)
       }
     }
   }
@@ -417,7 +597,6 @@ export class DeclarativeNetRequestAPI {
 
   evaluateOnBeforeRequest(details: WebRequestDetails): WebRequestBlockingResponse | null {
     const dnrType = normalizeResourceTypeForDnr(details.type)
-    const elementTypeMask = resourceTypeToElementMask(dnrType)
     const probe = {
       url: details.url,
       method: details.method,
@@ -434,8 +613,8 @@ export class DeclarativeNetRequestAPI {
         !conditionMatchesRequest(
           r.condition,
           probe,
-          elementTypeMask,
-          r.parsedUrlFilter,
+          r.urlFilter,
+          r.isUrlFilterCaseSensitive,
           r.regex,
         )
       ) {
@@ -450,8 +629,10 @@ export class DeclarativeNetRequestAPI {
       }
     }
 
-    if (!best) return null
-    const response = this.actionToBlockingResponse(best, details.url)
+    if (!best) {
+      return null
+    }
+    let response = this.actionToBlockingResponse(best, details.url)
     if (
       response &&
       (response.cancel === true || typeof response.redirectUrl === 'string') &&
@@ -459,13 +640,33 @@ export class DeclarativeNetRequestAPI {
     ) {
       return null
     }
+
+    // Main-frame blocks: prefer the extension's redirect-protection page when present.
     if (
       response?.cancel === true &&
-      shouldSkipNetworkBlockAsSameSite(details.url, details.initiator, details.type)
+      dnrType === 'main_frame' &&
+      best.condition.resourceTypes?.some((t) => String(t) === 'main_frame')
     ) {
+      const interstitial = this.mainFrameBlockInterstitialUrl(best.extensionId)
+      if (interstitial) {
+        response = { redirectUrl: interstitial }
+      }
+    }
+
+    return response
+  }
+
+  private mainFrameBlockInterstitialUrl(extensionId: string): string | null {
+    try {
+      const sessionExtensions = getSessionExtensions(this.ctx.session)
+      const extension = sessionExtensions.getExtension(extensionId)
+      if (!extension?.path) return null
+      const abs = path.join(extension.path, 'pages', 'redirect-protection', 'index.html')
+      if (!existsSync(abs)) return null
+      return `chrome-extension://${extensionId}/pages/redirect-protection/index.html`
+    } catch {
       return null
     }
-    return response
   }
 
   private actionToBlockingResponse(
@@ -494,24 +695,44 @@ export class DeclarativeNetRequestAPI {
         if (!red) return null
         if (red.url) return { redirectUrl: red.url }
         if (red.extensionPath) {
-          const p = red.extensionPath.replace(/^\//, '')
-          return { redirectUrl: `chrome-extension://${rule.extensionId}/${p}` }
+          const p = red.extensionPath.startsWith('/')
+            ? red.extensionPath
+            : `/${red.extensionPath}`
+          return { redirectUrl: `chrome-extension://${rule.extensionId}${p}` }
         }
-        if (red.transform?.scheme === 'https') {
-          try {
-            const u = new URL(requestUrl)
-            if (u.protocol === 'http:') {
-              u.protocol = 'https:'
-              return { redirectUrl: u.href }
-            }
-          } catch {
-            return null
-          }
+        if (red.transform) {
+          const transformed = applyUrlTransform(requestUrl, red.transform as UrlTransform)
+          if (transformed) return { redirectUrl: transformed }
         }
         return null
       }
-      default:
-        return null
+      case 'modifyHeaders': {
+        const mod = a as any
+        const res: WebRequestBlockingResponse = {}
+        if (mod?.requestHeaders?.length) {
+          const hdrs: Record<string, string | string[]> = {}
+          for (const h of mod.requestHeaders) {
+            if (h.operation === 'remove') {
+              hdrs[h.header] = ''
+            } else if (h.value != null) {
+              hdrs[h.header] = h.value
+            }
+          }
+          if (Object.keys(hdrs).length > 0) res.requestHeaders = hdrs
+        }
+        if (mod?.responseHeaders?.length) {
+          const hdrs: Record<string, string | string[]> = {}
+          for (const h of mod.responseHeaders) {
+            if (h.operation === 'remove') {
+              hdrs[h.header] = ''
+            } else if (h.value != null) {
+              hdrs[h.header] = h.value
+            }
+          }
+          if (Object.keys(hdrs).length > 0) res.responseHeaders = hdrs
+        }
+        return Object.keys(res).length > 0 ? res : null
+      }
     }
   }
 
@@ -600,6 +821,28 @@ export class DeclarativeNetRequestAPI {
     }
     for (const id of options.enableRulesetIds || []) {
       state.enabledRulesets.add(id)
+    }
+    await this.persistEnabledRulesets(extension.id, state.enabledRulesets)
+    this.rebuildGlobalIndexes()
+  }
+
+  private updateStaticRules = async (
+    { extension }: ExtensionEvent,
+    options: chrome.declarativeNetRequest.UpdateStaticRulesOptions,
+  ) => {
+    if (!extension) return
+    const state = this.ensureState(extension.id)
+    const rulesetId = options.rulesetId
+    let disabled = state.disabledStaticRuleIds.get(rulesetId)
+    if (!disabled) {
+      disabled = new Set()
+      state.disabledStaticRuleIds.set(rulesetId, disabled)
+    }
+    for (const id of options.disableRuleIds || []) {
+      disabled.add(id)
+    }
+    for (const id of options.enableRuleIds || []) {
+      disabled.delete(id)
     }
     this.rebuildGlobalIndexes()
   }
