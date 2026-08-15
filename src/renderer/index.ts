@@ -404,6 +404,8 @@ export const injectExtensionAPIs = () => {
             setPanelBehavior: invokeExtension('sidePanel.setPanelBehavior'),
             getPanelBehavior: invokeExtension('sidePanel.getPanelBehavior'),
             getLayout: invokeExtension('sidePanel.getLayout'),
+            open: invokeExtension('sidePanel.open'),
+            close: invokeExtension('sidePanel.close'),
           }
         },
       },

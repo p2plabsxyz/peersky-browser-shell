@@ -12,115 +12,95 @@ export type SidePanelBehavior = {
   openPanelOnActionClick: boolean
 }
 
-type ExtensionSidePanelState = {
-  /** Default options used when a tab has no tab-specific override. */
+type OpenCloseOptions = {
+  tabId?: number
+  windowId?: number
+}
+
+type PanelState = {
   global: SidePanelOptions
-  /** Partial overrides keyed by tab id. */
   tabs: Map<number, Partial<SidePanelOptions>>
   behavior: SidePanelBehavior
 }
 
-function normalizePath(path: string): string {
-  return String(path || '').replace(/^\//, '')
+function normalizePath(p: string) {
+  return String(p || '').replace(/^\//, '')
 }
 
-function cloneOptions(options: SidePanelOptions): SidePanelOptions {
-  const out: SidePanelOptions = { enabled: options.enabled !== false }
-  if (typeof options.path === 'string' && options.path.length > 0) {
-    out.path = options.path
-  }
-  if (typeof options.tabId === 'number') {
-    out.tabId = options.tabId
-  }
-  return out
-}
-
-/**
- * chrome.sidePanel — options / behavior state (open/close host wiring comes later).
- *
- * Spec: https://developer.chrome.com/docs/extensions/reference/api/sidePanel
- */
 export class SidePanelAPI {
-  private stateByExtension = new Map<string, ExtensionSidePanelState>()
+  private states = new Map<string, PanelState>()
 
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
-    const sidePanelPerm = { permission: 'sidePanel' as chrome.runtime.ManifestPermissions }
+    const perm = { permission: 'sidePanel' as chrome.runtime.ManifestPermissions }
 
-    handle('sidePanel.setOptions', this.setOptions, sidePanelPerm)
-    handle('sidePanel.getOptions', this.getOptions, sidePanelPerm)
-    handle('sidePanel.setPanelBehavior', this.setPanelBehavior, sidePanelPerm)
-    handle('sidePanel.getPanelBehavior', this.getPanelBehavior, sidePanelPerm)
-    // Harmless stub until the shell exposes layout controls.
-    handle('sidePanel.getLayout', this.getLayout, sidePanelPerm)
+    handle('sidePanel.setOptions', this.setOptions, perm)
+    handle('sidePanel.getOptions', this.getOptions, perm)
+    handle('sidePanel.setPanelBehavior', this.setPanelBehavior, perm)
+    handle('sidePanel.getPanelBehavior', this.getPanelBehavior, perm)
+    handle('sidePanel.getLayout', this.getLayout, perm)
+    handle('sidePanel.open', this.open, perm)
+    handle('sidePanel.close', this.close, perm)
 
     const sessionExtensions = ctx.session.extensions || ctx.session
-    sessionExtensions.getAllExtensions?.().forEach((extension: Electron.Extension) => {
-      this.processExtension(extension)
+    sessionExtensions.getAllExtensions?.().forEach((ext: Electron.Extension) => {
+      this.seedFromManifest(ext)
     })
-
-    sessionExtensions.on('extension-loaded', (_event: Electron.Event, extension: Electron.Extension) => {
-      this.processExtension(extension)
+    sessionExtensions.on('extension-loaded', (_e: Electron.Event, ext: Electron.Extension) => {
+      this.seedFromManifest(ext)
     })
-
-    sessionExtensions.on('extension-unloaded', (_event: Electron.Event, extension: Electron.Extension) => {
-      this.stateByExtension.delete(extension.id)
+    sessionExtensions.on('extension-unloaded', (_e: Electron.Event, ext: Electron.Extension) => {
+      this.states.delete(ext.id)
     })
   }
 
-  /** Resolved options for host/UI consumers (global + optional tab override). */
   getResolvedOptions(extensionId: string, tabId?: number): SidePanelOptions {
-    return this.resolveOptions(this.ensureState(extensionId), tabId)
+    return this.resolve(this.ensure(extensionId), tabId)
   }
 
-  /** Panel behavior for host/UI consumers (e.g. toolbar openPanelOnActionClick). */
   getResolvedPanelBehavior(extensionId: string): SidePanelBehavior {
-    return { ...this.ensureState(extensionId).behavior }
+    return { ...this.ensure(extensionId).behavior }
   }
 
-  private processExtension(extension: Electron.Extension) {
-    const state = this.ensureState(extension.id)
+  private seedFromManifest(extension: Electron.Extension) {
+    const state = this.ensure(extension.id)
     const manifest = getExtensionManifest(extension) as chrome.runtime.Manifest & {
       side_panel?: { default_path?: string }
     }
     const defaultPath = manifest.side_panel?.default_path
-    if (typeof defaultPath === 'string' && defaultPath.length > 0 && !state.global.path) {
+    if (typeof defaultPath === 'string' && defaultPath && !state.global.path) {
       state.global.path = normalizePath(defaultPath)
     }
   }
 
-  private ensureState(extensionId: string): ExtensionSidePanelState {
-    let state = this.stateByExtension.get(extensionId)
+  private ensure(extensionId: string): PanelState {
+    let state = this.states.get(extensionId)
     if (!state) {
       state = {
         global: { enabled: true },
         tabs: new Map(),
         behavior: { openPanelOnActionClick: false },
       }
-      this.stateByExtension.set(extensionId, state)
+      this.states.set(extensionId, state)
     }
     return state
   }
 
-  private resolveOptions(state: ExtensionSidePanelState, tabId?: number): SidePanelOptions {
-    if (typeof tabId === 'number' && state.tabs.has(tabId)) {
-      const merged = cloneOptions({
-        ...state.global,
-        ...state.tabs.get(tabId),
-        tabId,
-      })
-      return merged
-    }
-    return cloneOptions(state.global)
+  private resolve(state: PanelState, tabId?: number): SidePanelOptions {
+    const base =
+      typeof tabId === 'number' && state.tabs.has(tabId)
+        ? { ...state.global, ...state.tabs.get(tabId), tabId }
+        : { ...state.global }
+    const out: SidePanelOptions = { enabled: base.enabled !== false }
+    if (typeof base.path === 'string' && base.path) out.path = base.path
+    if (typeof base.tabId === 'number') out.tabId = base.tabId
+    return out
   }
 
-  private async assertValidPath(extension: Electron.Extension, path: string) {
+  private async validatePath(extension: Electron.Extension, path: string) {
     const normalized = normalizePath(path)
-    if (!normalized) {
-      throw new Error('Invalid side panel path')
-    }
-    const validated = await validateExtensionResource(extension, normalized)
-    if (!validated) {
+    if (!normalized) throw new Error('Invalid side panel path')
+    if (!(await validateExtensionResource(extension, normalized))) {
       throw new Error(`Invalid side panel path: ${normalized}`)
     }
     return normalized
@@ -129,22 +109,19 @@ export class SidePanelAPI {
   private setOptions = async (
     { extension }: ExtensionEvent,
     options: chrome.sidePanel.PanelOptions = {},
-  ): Promise<void> => {
+  ) => {
     if (!options || typeof options !== 'object') {
       throw new Error('Invalid side panel options')
     }
 
-    const state = this.ensureState(extension.id)
+    const state = this.ensure(extension.id)
     const tabId = typeof options.tabId === 'number' ? options.tabId : undefined
     const target: Partial<SidePanelOptions> =
       tabId != null ? { ...(state.tabs.get(tabId) || {}) } : { ...state.global }
 
-    if (typeof options.enabled === 'boolean') {
-      target.enabled = options.enabled
-    }
-
+    if (typeof options.enabled === 'boolean') target.enabled = options.enabled
     if (typeof options.path === 'string') {
-      target.path = await this.assertValidPath(extension, options.path)
+      target.path = await this.validatePath(extension, options.path)
     }
 
     if (tabId != null) {
@@ -160,33 +137,93 @@ export class SidePanelAPI {
   private getOptions = async (
     { extension }: ExtensionEvent,
     options: chrome.sidePanel.GetPanelOptions = {},
-  ): Promise<SidePanelOptions> => {
-    const state = this.ensureState(extension.id)
+  ) => {
     const tabId = typeof options?.tabId === 'number' ? options.tabId : undefined
-    return this.resolveOptions(state, tabId)
+    return this.resolve(this.ensure(extension.id), tabId)
   }
 
   private setPanelBehavior = async (
     { extension }: ExtensionEvent,
     behavior: chrome.sidePanel.PanelBehavior = {},
-  ): Promise<void> => {
+  ) => {
     if (!behavior || typeof behavior !== 'object') {
       throw new Error('Invalid side panel behavior')
     }
-    const state = this.ensureState(extension.id)
     if (typeof behavior.openPanelOnActionClick === 'boolean') {
-      state.behavior.openPanelOnActionClick = behavior.openPanelOnActionClick
+      this.ensure(extension.id).behavior.openPanelOnActionClick = behavior.openPanelOnActionClick
     }
   }
 
-  private getPanelBehavior = async ({
-    extension,
-  }: ExtensionEvent): Promise<SidePanelBehavior> => {
+  private getPanelBehavior = async ({ extension }: ExtensionEvent) => {
     return this.getResolvedPanelBehavior(extension.id)
   }
 
-  private getLayout = async (): Promise<{ side: 'left' | 'right' }> => {
-    // Peersky docks on the right until a layout preference API exists.
-    return { side: 'right' }
+  private getLayout = async () => ({ side: 'right' as const })
+
+  private resolveOpenContext(options: OpenCloseOptions) {
+    const tabId = typeof options.tabId === 'number' ? options.tabId : undefined
+    let windowId = typeof options.windowId === 'number' ? options.windowId : undefined
+
+    if (tabId == null && windowId == null) {
+      throw new Error('Either tabId or windowId must be provided')
+    }
+
+    if (tabId != null) {
+      const tab = this.ctx.store.getTabById(tabId)
+      if (!tab || tab.isDestroyed()) throw new Error(`No tab with id: ${tabId}`)
+      const win = this.ctx.store.tabToWindow.get(tab)
+      if (win && !win.isDestroyed()) {
+        if (windowId != null && windowId !== win.id) {
+          throw new Error('tabId does not belong to windowId')
+        }
+        windowId = win.id
+      }
+    } else if (windowId != null) {
+      const win = this.ctx.store.getWindowById(windowId)
+      if (!win || win.isDestroyed()) throw new Error(`No window with id: ${windowId}`)
+    }
+
+    return { tabId, windowId }
+  }
+
+  private open = async ({ extension }: ExtensionEvent, options?: OpenCloseOptions) => {
+    if (typeof this.ctx.store.impl.openSidePanel !== 'function') {
+      throw new Error('sidePanel.open is not implemented')
+    }
+
+    const { tabId, windowId } = this.resolveOpenContext(options || {})
+    const resolved = this.resolve(this.ensure(extension.id), tabId)
+    if (resolved.enabled === false) {
+      throw new Error('Side panel is disabled')
+    }
+    if (!resolved.path) {
+      throw new Error('No side panel path configured')
+    }
+    await this.validatePath(extension, resolved.path)
+
+    await this.ctx.store.impl.openSidePanel({
+      extension,
+      path: resolved.path,
+      tabId,
+      windowId,
+    })
+  }
+
+  private close = async ({ extension }: ExtensionEvent, options?: OpenCloseOptions) => {
+    if (typeof this.ctx.store.impl.closeSidePanel !== 'function') {
+      throw new Error('sidePanel.close is not implemented')
+    }
+
+    const tabId = typeof options?.tabId === 'number' ? options.tabId : undefined
+    const windowId = typeof options?.windowId === 'number' ? options.windowId : undefined
+    if (tabId == null && windowId == null) {
+      throw new Error('Either tabId or windowId must be provided')
+    }
+
+    await this.ctx.store.impl.closeSidePanel({
+      extension,
+      tabId,
+      windowId,
+    })
   }
 }
