@@ -393,6 +393,21 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      sidePanel: {
+        shouldInject: () =>
+          !!(manifest.permissions as string[] | undefined)?.includes('sidePanel'),
+        factory: (base) => {
+          return {
+            ...base,
+            setOptions: invokeExtension('sidePanel.setOptions'),
+            getOptions: invokeExtension('sidePanel.getOptions'),
+            setPanelBehavior: invokeExtension('sidePanel.setPanelBehavior'),
+            getPanelBehavior: invokeExtension('sidePanel.getPanelBehavior'),
+            getLayout: invokeExtension('sidePanel.getLayout'),
+          }
+        },
+      },
+
       commands: {
         factory: (base) => {
           return {

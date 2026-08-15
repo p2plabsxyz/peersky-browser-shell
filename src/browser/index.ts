@@ -32,6 +32,7 @@ import { resolvePartition } from './partition'
 import { ExtensionStateStore } from './state-store'
 import { AlarmsAPI } from './api/alarms'
 import { DownloadsAPI } from './api/downloads'
+import { SidePanelAPI } from './api/side-panel'
 
 function checkVersion() {
   const electronVersion = process.versions.electron
@@ -162,6 +163,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     alarms: AlarmsAPI
     downloads: DownloadsAPI
     scripting: ScriptingAPI
+    sidePanel: SidePanelAPI
     storageSync: StorageSyncAPI
     tabs: TabsAPI
     webNavigation: WebNavigationAPI
@@ -215,6 +217,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       alarms: new AlarmsAPI(this.ctx),
       downloads: new DownloadsAPI(this.ctx),
       scripting: new ScriptingAPI(this.ctx),
+      sidePanel: new SidePanelAPI(this.ctx),
       storageSync: new StorageSyncAPI(this.ctx),
       tabs: new TabsAPI(this.ctx),
       webNavigation: new WebNavigationAPI(this.ctx),
