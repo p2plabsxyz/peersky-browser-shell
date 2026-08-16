@@ -64,6 +64,11 @@ export const injectExtensionAPIs = () => {
       return
     }
 
+    // Promise-style callers must observe failures as rejections.
+    if (lastError) {
+      if (rt) delete rt.lastError
+      throw new Error(lastError.message)
+    }
     if (rt) delete rt.lastError
     return result
   }

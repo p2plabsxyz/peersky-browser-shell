@@ -51,6 +51,8 @@ export const useExtensionBrowser = (opts: {
   extensionName: string
   openDevTools?: boolean
   assignTabDetails?: ChromeExtensionImpl['assignTabDetails']
+  openSidePanel?: ChromeExtensionImpl['openSidePanel']
+  closeSidePanel?: ChromeExtensionImpl['closeSidePanel']
 }) => {
   let w: Electron.BrowserWindow
   let extensions: ElectronChromeExtensions
@@ -77,6 +79,8 @@ export const useExtensionBrowser = (opts: {
       assignTabDetails(details, tab) {
         opts.assignTabDetails?.(details, tab)
       },
+      openSidePanel: opts.openSidePanel,
+      closeSidePanel: opts.closeSidePanel,
     })
 
     extension = await customSession.loadExtension(path.join(fixtures, opts.extensionName))

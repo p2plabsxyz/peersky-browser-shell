@@ -45,6 +45,45 @@ export const createCrxRemoteWindow = () => {
 const isBackgroundHostSupported = (extension: Electron.Extension) =>
   extension.manifest.manifest_version === 2 && extension.manifest.background?.scripts?.length > 0
 
+const isServiceWorkerBackground = (extension: Electron.Extension) =>
+  extension.manifest.manifest_version === 3 &&
+  typeof extension.manifest.background?.service_worker === 'string'
+
+async function waitForServiceWorkerBackground(
+  extension: Electron.Extension,
+  session: Electron.Session,
+) {
+  const scope = extension.url.endsWith('/') ? extension.url : `${extension.url}/`
+
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error(`Timed out waiting for service worker: ${extension.id}`))
+    }, 10000)
+
+    const onStatus = ({
+      runningStatus,
+      versionId,
+    }: Electron.Event<Electron.ServiceWorkersRunningStatusChangedEventParams>) => {
+      if (runningStatus !== 'running') return
+      const worker = (session as any).serviceWorkers.getWorkerFromVersionID(versionId)
+      if (!worker?.scope || !String(worker.scope).startsWith(scope.replace(/\/$/, ''))) return
+      cleanup()
+      resolve()
+    }
+
+    const cleanup = () => {
+      clearTimeout(timeout)
+      session.serviceWorkers.removeListener('running-status-changed', onStatus)
+    }
+
+    session.serviceWorkers.on('running-status-changed', onStatus)
+    session.serviceWorkers.startWorkerForScope(scope).catch(() => {
+      // Worker may already be starting from loadExtension / ECE.
+    })
+  })
+}
+
 export const waitForBackgroundPage = async (
   extension: Electron.Extension,
   session: Electron.Session,
@@ -86,6 +125,11 @@ export async function waitForBackgroundScriptEvaluated(
   extension: Electron.Extension,
   session: Electron.Session,
 ) {
+  if (isServiceWorkerBackground(extension)) {
+    await waitForServiceWorkerBackground(extension, session)
+    return
+  }
+
   if (!isBackgroundHostSupported(extension)) return
 
   const backgroundHost = await waitForBackgroundPage(extension, session)
