@@ -52,6 +52,11 @@ export class SidePanelAPI {
     sessionExtensions.on('extension-unloaded', (_e: Electron.Event, ext: Electron.Extension) => {
       this.states.delete(ext.id)
     })
+    this.ctx.store.on('tab-removed', (tabId: number) => {
+      for (const state of this.states.values()) {
+        state.tabs.delete(tabId)
+      }
+    })
   }
 
   getResolvedOptions(extensionId: string, tabId?: number): SidePanelOptions {
@@ -214,11 +219,7 @@ export class SidePanelAPI {
       throw new Error('sidePanel.close is not implemented')
     }
 
-    const tabId = typeof options?.tabId === 'number' ? options.tabId : undefined
-    const windowId = typeof options?.windowId === 'number' ? options.windowId : undefined
-    if (tabId == null && windowId == null) {
-      throw new Error('Either tabId or windowId must be provided')
-    }
+    const { tabId, windowId } = this.resolveOpenContext(options || {})
 
     await this.ctx.store.impl.closeSidePanel({
       extension,

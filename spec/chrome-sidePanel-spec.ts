@@ -86,6 +86,14 @@ describe('chrome.sidePanel', () => {
     expect(closes).to.have.lengthOf(1)
     expect(closes[0].extension.id).to.equal(browser.extension.id)
     expect(closes[0].tabId).to.equal(tabId)
+    expect(closes[0].windowId).to.equal(browser.window.id)
+  })
+
+  it('rejects close for a missing tab', async () => {
+    const result = await browser.crx.exec('sidePanel.close', { tabId: 999999 })
+    expect(result).to.be.an('object')
+    expect(result.__error).to.match(/No tab with id/i)
+    expect(closes).to.have.lengthOf(0)
   })
 
   it('rejects open when the panel is disabled for the tab', async () => {
