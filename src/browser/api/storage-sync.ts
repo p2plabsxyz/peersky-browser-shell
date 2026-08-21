@@ -410,7 +410,11 @@ export class StorageSyncAPI {
     })
   }
 
-  /** Enterprise policy: read `managedConfig` from extension local storage (Peersky bootstrap). */
+  /**
+   * chrome.storage.managed — enterprise policy, read-only to the extension.
+   * There is no OS policy store here, so the host seeds a `managedConfig`
+   * object into the extension's local storage and this exposes it.
+   */
   private managedGet = async (
     { extension }: ExtensionEvent,
     keys?: string | string[] | Record<string, unknown> | null,

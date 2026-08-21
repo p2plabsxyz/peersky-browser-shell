@@ -44,6 +44,8 @@ export interface WebRequestDetails {
   type?: string
   timeStamp?: number
   initiator?: string
+  documentUrl?: string
+  frameAncestors?: { url: string; frameId: number }[]
   requestBody?: chrome.webRequest.WebRequestBody
   requestHeaders?: Record<string, string | string[]>
   responseHeaders?: Record<string, string | string[]>
@@ -186,10 +188,19 @@ export class WebRequestAPI {
       permission: 'webRequest',
     })
 
-    handle('webRequest.onBeforeRequest.response', this.handleBlockingResponse)
-    handle('webRequest.onBeforeSendHeaders.response', this.handleBlockingResponse)
-    handle('webRequest.onHeadersReceived.response', this.handleBlockingResponse)
-    handle('webRequest.onAuthRequired.response', this.handleBlockingResponse)
+    // Each stage keeps its own pending entry: a request carries one id through
+    // every stage, so a single map would let one stage's verdict settle
+    // another's promise.
+    handle('webRequest.onBeforeRequest.response', this.handleBlockingResponseFor('onBeforeRequest'))
+    handle(
+      'webRequest.onBeforeSendHeaders.response',
+      this.handleBlockingResponseFor('onBeforeSendHeaders'),
+    )
+    handle(
+      'webRequest.onHeadersReceived.response',
+      this.handleBlockingResponseFor('onHeadersReceived'),
+    )
+    handle('webRequest.onAuthRequired.response', this.handleBlockingResponseFor('onAuthRequired'))
 
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     sessionExtensions.on('extension-unloaded', (_event, extension) => {
@@ -218,6 +229,58 @@ export class WebRequestAPI {
     })
   }
 
+  /**
+   * Register a listener entry for one webRequest event.
+   *
+   * An extension may hold several listeners per event with different filters —
+   * uBlock Origin registers a broad http/https filtering listener alongside a
+   * narrow guard for its own web-accessible resources. Replacing per extension
+   * here silently dropped all but the last one, while the renderer kept every
+   * callback subscribed to the shared IPC channel; each event was then answered
+   * by all of them under one listener id, and whichever response landed first
+   * won. A guard whose filter should never match http URLs ended up cancelling
+   * arbitrary page traffic.
+   *
+   * An entry with an identical (extension, filter, spec) key replaces its
+   * predecessor so service-worker restarts re-registering the same listeners
+   * do not pile up stale entries. The entry id is returned to the renderer,
+   * which echoes it back with each blocking response and ignores events
+   * addressed to other listeners.
+   */
+  private registerListener(
+    list: ListenerEntry[],
+    extension: Electron.Extension,
+    filter: chrome.webRequest.RequestFilter,
+    extraInfoSpec?: string[],
+  ): { list: ListenerEntry[]; id: string } {
+    const keyOf = (f: chrome.webRequest.RequestFilter, spec?: string[]) =>
+      JSON.stringify([f?.urls ?? [], f?.types ?? [], spec ?? []])
+    const entry: ListenerEntry = {
+      id: `wr-${++this.listenerIdCounter}`,
+      extensionId: extension.id,
+      filter: { ...filter },
+      extraInfoSpec,
+    }
+    const key = keyOf(filter, extraInfoSpec)
+    const next = list.filter(
+      (e) => e.extensionId !== extension.id || keyOf(e.filter, e.extraInfoSpec) !== key,
+    )
+    next.push(entry)
+    return { list: next, id: entry.id }
+  }
+
+  private removeListenerEntry(
+    list: ListenerEntry[],
+    extension: Electron.Extension | undefined,
+    listenerId?: string,
+  ): ListenerEntry[] {
+    if (!extension) return list
+    return list.filter((e) => {
+      if (e.extensionId !== extension.id) return true
+      return listenerId != null && e.id !== listenerId
+    })
+  }
+
   private addOnBeforeRequestListener = (
     { extension }: ExtensionEvent,
     filter: chrome.webRequest.RequestFilter,
@@ -230,21 +293,16 @@ export class WebRequestAPI {
       const perms = (extension.manifest?.permissions || []) as string[]
       if (!perms.includes('webRequestBlocking')) return
     }
-    this.onBeforeRequestListeners = this.onBeforeRequestListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onBeforeRequestListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
+    const res = this.registerListener(this.onBeforeRequestListeners, extension, filter, extraInfoSpec)
+    this.onBeforeRequestListeners = res.list
+    return res.id
   }
 
-  private removeOnBeforeRequestListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onBeforeRequestListeners = this.onBeforeRequestListeners.filter(
-      (e) => e.extensionId !== extension.id,
+  private removeOnBeforeRequestListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
+    this.onBeforeRequestListeners = this.removeListenerEntry(
+      this.onBeforeRequestListeners,
+      extension,
+      listenerId,
     )
   }
 
@@ -260,21 +318,16 @@ export class WebRequestAPI {
       const perms = (extension.manifest?.permissions || []) as string[]
       if (!perms.includes('webRequestBlocking')) return
     }
-    this.onBeforeSendHeadersListeners = this.onBeforeSendHeadersListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onBeforeSendHeadersListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
+    const res = this.registerListener(this.onBeforeSendHeadersListeners, extension, filter, extraInfoSpec)
+    this.onBeforeSendHeadersListeners = res.list
+    return res.id
   }
 
-  private removeOnBeforeSendHeadersListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onBeforeSendHeadersListeners = this.onBeforeSendHeadersListeners.filter(
-      (e) => e.extensionId !== extension.id,
+  private removeOnBeforeSendHeadersListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
+    this.onBeforeSendHeadersListeners = this.removeListenerEntry(
+      this.onBeforeSendHeadersListeners,
+      extension,
+      listenerId,
     )
   }
 
@@ -284,21 +337,16 @@ export class WebRequestAPI {
     extraInfoSpec?: string[],
   ) => {
     if (!filter?.urls || !Array.isArray(filter.urls)) return
-    this.onSendHeadersListeners = this.onSendHeadersListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onSendHeadersListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
+    const res = this.registerListener(this.onSendHeadersListeners, extension, filter, extraInfoSpec)
+    this.onSendHeadersListeners = res.list
+    return res.id
   }
 
-  private removeOnSendHeadersListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onSendHeadersListeners = this.onSendHeadersListeners.filter(
-      (e) => e.extensionId !== extension.id,
+  private removeOnSendHeadersListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
+    this.onSendHeadersListeners = this.removeListenerEntry(
+      this.onSendHeadersListeners,
+      extension,
+      listenerId,
     )
   }
 
@@ -314,21 +362,16 @@ export class WebRequestAPI {
       const perms = (extension.manifest?.permissions || []) as string[]
       if (!perms.includes('webRequestBlocking')) return
     }
-    this.onHeadersReceivedListeners = this.onHeadersReceivedListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onHeadersReceivedListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
+    const res = this.registerListener(this.onHeadersReceivedListeners, extension, filter, extraInfoSpec)
+    this.onHeadersReceivedListeners = res.list
+    return res.id
   }
 
-  private removeOnHeadersReceivedListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onHeadersReceivedListeners = this.onHeadersReceivedListeners.filter(
-      (e) => e.extensionId !== extension.id,
+  private removeOnHeadersReceivedListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
+    this.onHeadersReceivedListeners = this.removeListenerEntry(
+      this.onHeadersReceivedListeners,
+      extension,
+      listenerId,
     )
   }
 
@@ -463,13 +506,13 @@ export class WebRequestAPI {
     )
   }
 
-  private handleBlockingResponse = (
+  private handleBlockingResponseFor = (stage: string) => (
     { extension }: ExtensionEvent,
     requestId: string,
     listenerIdOrResult: string | WebRequestBlockingResponse | undefined,
     maybeResult?: WebRequestBlockingResponse,
   ) => {
-    const pending = this.pendingBlocking.get(requestId)
+    const pending = this.pendingBlocking.get(`${stage}:${requestId}`)
     if (!pending) return
     // New signature: (requestId, listenerId, result). Backwards compatible with (requestId, result).
     const listenerId =
@@ -479,15 +522,16 @@ export class WebRequestAPI {
 
     pending.results.set(listenerId, result || {})
     if (pending.results.size >= pending.expectedCount) {
-      this.settlePending(requestId)
+      this.settlePending(`${stage}:${requestId}`)
     }
   }
 
-  private settlePending(requestId: string): void {
-    const pending = this.pendingBlocking.get(requestId)
+  /** @param pendingKey `${stage}:${requestId}` */
+  private settlePending(pendingKey: string): void {
+    const pending = this.pendingBlocking.get(pendingKey)
     if (!pending) return
     clearTimeout(pending.timeoutHandle)
-    this.pendingBlocking.delete(requestId)
+    this.pendingBlocking.delete(pendingKey)
     const merged = pending.merge(pending.results)
     pending.resolve(merged)
   }
@@ -814,7 +858,36 @@ export class WebRequestAPI {
     const frameId = typeof details.frameId === 'number' ? details.frameId : 0
     const documentId = tabId >= 0 ? this.ctx.store.getDocumentId(tabId, frameId) : undefined
 
+    // Chrome reports the document a subresource was requested from. Content
+    // blockers need it to tell first-party from third-party; without it every
+    // request looks origin-less and generic rules match far too much.
+    const type = this.normalizeResourceType(details.resourceType)
+    let documentUrl: string | undefined
+    const frameAncestors: { url: string; frameId: number }[] = []
+    if (type !== 'main_frame') {
+      const frame = details.frame
+      try {
+        if (frame && !frame.isDestroyed()) {
+          documentUrl = frame.url || undefined
+          for (let parent = frame.parent; parent && !parent.isDestroyed(); parent = parent.parent) {
+            frameAncestors.push({
+              url: parent.url,
+              frameId: parent === parent.top ? 0 : parent.routingId,
+            })
+          }
+        }
+      } catch {
+        // Frame went away mid-request; fall back to the initiator below.
+      }
+      if (!documentUrl) {
+        const initiator = this.resolveInitiator(details)
+        if (initiator && initiator !== 'null') documentUrl = initiator
+      }
+    }
+
     return {
+      documentUrl,
+      frameAncestors: frameAncestors.length ? frameAncestors : undefined,
       url: details.url || '',
       method: details.method || 'GET',
       tabId,
@@ -824,7 +897,7 @@ export class WebRequestAPI {
       frameId,
       parentFrameId:
         typeof details.parentFrameId === 'number' ? details.parentFrameId : -1,
-      type: this.normalizeResourceType(details.resourceType),
+      type,
       timeStamp: details.timestamp != null ? details.timestamp : Date.now(),
       initiator: this.resolveInitiator(details),
       requestBody: opts?.includeRequestBody ? this.normalizeRequestBody(details) : undefined,
@@ -1049,10 +1122,11 @@ export class WebRequestAPI {
 
     return new Promise<WebRequestBlockingResponse>((resolve) => {
       const timeoutHandle = setTimeout(() => {
-        this.settlePending(requestId)
+        this.settlePending(`onBeforeRequest:${requestId}`)
       }, BLOCKING_RESPONSE_TIMEOUT_MS)
 
-      this.pendingBlocking.set(requestId, {
+
+      this.pendingBlocking.set(`onBeforeRequest:${requestId}`, {
         resolve,
         results: new Map(),
         expectedCount: blockingEntries.length,
@@ -1126,10 +1200,10 @@ export class WebRequestAPI {
 
     return new Promise<{ requestHeaders?: Record<string, string | string[]> }>((resolve) => {
       const timeoutHandle = setTimeout(() => {
-        this.settlePending(requestId)
+        this.settlePending(`onBeforeSendHeaders:${requestId}`)
       }, BLOCKING_RESPONSE_TIMEOUT_MS)
 
-      this.pendingBlocking.set(requestId, {
+      this.pendingBlocking.set(`onBeforeSendHeaders:${requestId}`, {
         resolve,
         results: new Map(),
         expectedCount: blockingEntries.length,
@@ -1232,10 +1306,10 @@ export class WebRequestAPI {
 
     return new Promise<{ responseHeaders?: Record<string, string | string[]> }>((resolve) => {
       const timeoutHandle = setTimeout(() => {
-        this.settlePending(requestId)
+        this.settlePending(`onHeadersReceived:${requestId}`)
       }, BLOCKING_RESPONSE_TIMEOUT_MS)
 
-      this.pendingBlocking.set(requestId, {
+      this.pendingBlocking.set(`onHeadersReceived:${requestId}`, {
         resolve,
         results: new Map(),
         expectedCount: blockingEntries.length,
@@ -1419,10 +1493,10 @@ export class WebRequestAPI {
 
     return new Promise<{ cancel?: boolean; authCredentials?: { username: string; password: string } }>((resolve) => {
       const timeoutHandle = setTimeout(() => {
-        this.settlePending(requestId)
+        this.settlePending(`onAuthRequired:${requestId}`)
       }, BLOCKING_RESPONSE_TIMEOUT_MS)
 
-      this.pendingBlocking.set(requestId, {
+      this.pendingBlocking.set(`onAuthRequired:${requestId}`, {
         resolve,
         results: new Map(),
         expectedCount: blockingEntries.length,

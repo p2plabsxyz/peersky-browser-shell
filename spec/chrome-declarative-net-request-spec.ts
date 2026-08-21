@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { DeclarativeNetRequestAPI } from '../src/browser/api/declarative-net-request'
 import { WebRequestAPI } from '../src/browser/api/web-request'
 
-describe('chrome.declarativeNetRequest parity (Ghostery / uBlock-style DNR)', () => {
+describe('chrome.declarativeNetRequest parity (Chrome MV3 static rulesets)', () => {
   const createCtx = () => {
     const handlers = new Map<string, Function>()
     const sessionExtensions = new EventEmitter() as any
@@ -38,7 +38,7 @@ describe('chrome.declarativeNetRequest parity (Ghostery / uBlock-style DNR)', ()
     },
   })
 
-  it('honors domainType thirdParty for ping (matches Ghostery dnr-tracking pattern)', async () => {
+  it('honors domainType thirdParty for ping', async () => {
     const { ctx, handlers } = createCtx()
     const dnr = new DeclarativeNetRequestAPI(ctx)
     await handlers.get('declarativeNetRequest.updateDynamicRules')!(ext(), {
@@ -136,7 +136,7 @@ describe('chrome.declarativeNetRequest parity (Ghostery / uBlock-style DNR)', ()
     expect(res).to.deep.equal({ cancel: true })
   })
 
-  it('blocks via requestDomains rules indexed by hostname (Ghostery grouped rulesets)', async () => {
+  it('blocks via requestDomains rules indexed by hostname', async () => {
     const { ctx, handlers } = createCtx()
     const dnr = new DeclarativeNetRequestAPI(ctx)
     const blockedDomain = 'ads-tracker-chunk-test.example'
@@ -244,10 +244,10 @@ describe('chrome.declarativeNetRequest parity (Ghostery / uBlock-style DNR)', ()
     ).to.equal(null)
   })
 
-  it('matches Ghostery redirect-protection ||opera.com^*pwngames (Chrome urlFilter, not ABP)', async () => {
+  it('matches ||opera.com^*pwngames using Chrome urlFilter semantics, not ABP', async () => {
     const { ctx, handlers } = createCtx()
     const dnr = new DeclarativeNetRequestAPI(ctx)
-    await handlers.get('declarativeNetRequest.updateDynamicRules')!(ext('ghostery-test'), {
+    await handlers.get('declarativeNetRequest.updateDynamicRules')!(ext('dnr-test'), {
       addRules: [
         {
           id: 4669,
@@ -272,7 +272,7 @@ describe('chrome.declarativeNetRequest parity (Ghostery / uBlock-style DNR)', ()
       initiator: 'https://thepiratebay.org/',
     })
     expect(res?.redirectUrl).to.equal(
-      'chrome-extension://ghostery-test/pages/redirect-protection/index.html',
+      'chrome-extension://dnr-test/pages/redirect-protection/index.html',
     )
   })
 })

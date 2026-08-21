@@ -468,24 +468,6 @@ export class DeclarativeNetRequestAPI {
       if (res.enabled) state.enabledRulesets.add(res.id)
     }
 
-    // If no rulesets are enabled yet, and the extension has the
-    // declarativeNetRequest permission, auto-enable ALL rulesets.
-    // This is necessary because some extensions (like Ghostery)
-    // set all rulesets to enabled:false and rely on their background
-    // service worker to call updateEnabledRulesets().  In Electron,
-    // MV3 service workers may never start, so we enable everything
-    // here as a safe default — the extension can still call
-    // updateEnabledRulesets() later to disable unwanted ones.
-    if (state.enabledRulesets.size === 0) {
-      // manifest is already typed as chrome.runtime.ManifestV3 (see above)
-      const perms = manifest.permissions
-      if (Array.isArray(perms) && (perms.includes('declarativeNetRequest') || perms.includes('declarativeNetRequestWithHostAccess'))) {
-        for (const res of dnr.rule_resources) {
-          state.enabledRulesets.add(res.id)
-        }
-      }
-    }
-
     for (const res of dnr.rule_resources) {
       try {
         const fullPath = path.join(extension.path, res.path)
