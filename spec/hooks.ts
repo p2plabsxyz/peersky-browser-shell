@@ -146,7 +146,10 @@ export const useExtensionBrowser = (opts: {
       },
 
       async eventOnce(eventName: string) {
-        const p = emittedOnce(ipcMain, 'success')
+        // Use a dedicated channel so a concurrent crx.exec()'s `success`
+        // cannot resolve this waiter (e.g. storage.remove completing before
+        // storage.onChanged is delivered).
+        const p = emittedOnce(ipcMain, 'event-success')
         await w.webContents.executeJavaScript(
           `exec('${JSON.stringify({ type: 'event-once', name: eventName })}')`,
         )

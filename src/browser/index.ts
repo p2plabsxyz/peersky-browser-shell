@@ -422,6 +422,30 @@ export class ElectronChromeExtensions extends EventEmitter {
   }
 
   /**
+   * Mark `tab` as the focused page tab for `window`.
+   *
+   * Hosts with a docked side panel use this so APIs like `tabs.getCurrent`
+   * resolve to the page, not the panel guest. Supported public replacement
+   * for reaching into `ctx.store`.
+   */
+  focusTab(tab: Electron.WebContents, window: Electron.BaseWindow) {
+    this.checkWebContentsArgument(tab)
+    if (!window || (typeof (window as any).isDestroyed === 'function' && (window as any).isDestroyed())) {
+      throw new Error('focusTab requires a live browser window')
+    }
+    this.ctx.store.lastFocusedWindowId = window.id
+    if (!this.ctx.store.tabs.has(tab)) {
+      this.ctx.store.addTab(tab, window)
+    } else if (this.ctx.store.tabToWindow.get(tab) !== window) {
+      this.ctx.store.tabToWindow.set(tab, window)
+    }
+    this.ctx.store.setActiveTab(tab)
+    if (this.ctx.store.tabs.has(tab)) {
+      this.api.tabs.onActivated(tab.id)
+    }
+  }
+
+  /**
    * Add webContents to be tracked as an extension host which will receive
    * extension events when a chrome-extension:// resource is loaded.
    *

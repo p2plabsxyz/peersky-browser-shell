@@ -71,11 +71,30 @@ export class ExtensionStore extends EventEmitter {
   /** Remember which window/tab clicked the browser action for this extension. */
   setActivationContext(extensionId: string, windowId: number, tabId: number) {
     this.activationContextMap.set(extensionId, { windowId, tabId })
+    this.noteUserGesture(extensionId)
   }
 
   /** Forget the activation context when an extension unloads. */
   clearActivationContext(extensionId: string) {
     this.activationContextMap.delete(extensionId)
+    this.userGestureAt.delete(extensionId)
+  }
+
+  /**
+   * Chrome grants a short-lived "user gesture" for extension actions such as
+   * toolbar clicks and context-menu clicks. Electron does not forward that
+   * token across `crx-msg`, so we record it here when those host events fire.
+   */
+  private userGestureAt = new Map<string, number>()
+  private static readonly USER_GESTURE_TTL_MS = 5000
+
+  noteUserGesture(extensionId: string) {
+    this.userGestureAt.set(extensionId, Date.now())
+  }
+
+  hasUserGesture(extensionId: string) {
+    const at = this.userGestureAt.get(extensionId)
+    return typeof at === 'number' && Date.now() - at <= ExtensionStore.USER_GESTURE_TTL_MS
   }
 
   /**

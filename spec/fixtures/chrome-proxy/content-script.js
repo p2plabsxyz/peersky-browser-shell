@@ -36,7 +36,7 @@ async function exec(action) {
     }
   }
 
-  sendIpc('success', result)
+  sendIpc(action && action.type === 'event-once' ? 'event-success' : 'success', result)
 }
 
 window.addEventListener('message', (event) => {

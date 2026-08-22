@@ -585,6 +585,7 @@ export class BrowserActionAPI {
   triggerClicked(extensionId: string, tabDetails?: Partial<chrome.tabs.Tab>) {
     const details = tabDetails ?? { id: 0, windowId: 0, url: '', active: true }
     d(`triggerClicked for ${extensionId}`)
+    this.ctx.store.noteUserGesture(extensionId)
     this.ctx.router.sendEvent(extensionId, 'browserAction.onClicked', details)
   }
 

@@ -94,11 +94,12 @@ export class SidePanelAPI {
   private resolve(state: PanelState, tabId?: number): SidePanelOptions {
     const base =
       typeof tabId === 'number' && state.tabs.has(tabId)
-        ? { ...state.global, ...state.tabs.get(tabId), tabId }
+        ? { ...state.global, ...state.tabs.get(tabId) }
         : { ...state.global }
     const out: SidePanelOptions = { enabled: base.enabled !== false }
     if (typeof base.path === 'string' && base.path) out.path = base.path
-    if (typeof base.tabId === 'number') out.tabId = base.tabId
+    // Chrome echoes the queried tabId even when only global options apply.
+    if (typeof tabId === 'number') out.tabId = tabId
     return out
   }
 
@@ -177,10 +178,14 @@ export class SidePanelAPI {
       const tab = this.ctx.store.getTabById(tabId)
       if (!tab || tab.isDestroyed()) throw new Error(`No tab with id: ${tabId}`)
       const win = this.ctx.store.tabToWindow.get(tab)
-      if (win && !win.isDestroyed()) {
-        if (windowId != null && windowId !== win.id) {
+      if (windowId != null) {
+        // Caller supplied both ids — always validate, even if the tab's window
+        // mapping is missing or the window is already destroyed.
+        if (!win || win.isDestroyed() || windowId !== win.id) {
           throw new Error('tabId does not belong to windowId')
         }
+      }
+      if (win && !win.isDestroyed()) {
         windowId = win.id
       }
     } else if (windowId != null) {
@@ -194,6 +199,10 @@ export class SidePanelAPI {
   private open = async ({ extension }: ExtensionEvent, options?: OpenCloseOptions) => {
     if (typeof this.ctx.store.impl.openSidePanel !== 'function') {
       throw new Error('sidePanel.open is not implemented')
+    }
+
+    if (!this.ctx.store.hasUserGesture(extension.id)) {
+      throw new Error('`sidePanel.open()` may only be called in response to a user gesture.')
     }
 
     const { tabId, windowId } = this.resolveOpenContext(options || {})

@@ -17,6 +17,11 @@ describe('chrome.sidePanel', () => {
     },
   })
 
+  const sidePanelApi = () => browser.extensions.api.sidePanel as any
+  const asEvent = () => ({ extension: browser.extension })
+  const noteUserGesture = () =>
+    (browser.extensions as any).ctx.store.noteUserGesture(browser.extension.id)
+
   beforeEach(() => {
     opens.length = 0
     closes.length = 0
@@ -54,7 +59,22 @@ describe('chrome.sidePanel', () => {
     const defaults = await browser.crx.exec('sidePanel.getOptions', {})
 
     expect(forTab.enabled).to.equal(false)
+    expect(forTab.tabId).to.equal(tabId)
     expect(defaults.enabled).to.equal(true)
+    expect(defaults.tabId).to.equal(undefined)
+  })
+
+  it('getOptions echoes the queried tabId when only global options exist', async () => {
+    const tabId = browser.webContents.id
+    await browser.crx.exec('sidePanel.setOptions', {
+      path: 'sidepanel.html',
+      enabled: true,
+    })
+
+    const forTab = await browser.crx.exec('sidePanel.getOptions', { tabId })
+    expect(forTab.path).to.equal('sidepanel.html')
+    expect(forTab.enabled).to.equal(true)
+    expect(forTab.tabId).to.equal(tabId)
   })
 
   it('setPanelBehavior and getPanelBehavior round-trip', async () => {
@@ -70,6 +90,7 @@ describe('chrome.sidePanel', () => {
 
   it('open delegates to the host with a resolved path', async () => {
     const tabId = browser.webContents.id
+    noteUserGesture()
     await browser.crx.exec('sidePanel.open', { tabId })
 
     expect(opens).to.have.lengthOf(1)
@@ -90,10 +111,41 @@ describe('chrome.sidePanel', () => {
   })
 
   it('rejects close for a missing tab', async () => {
-    const result = await browser.crx.exec('sidePanel.close', { tabId: 999999 })
-    expect(result).to.be.an('object')
-    expect(result.__error).to.match(/No tab with id/i)
+    // Exercise the handler directly: router still swallows throws until a
+    // dedicated error-propagation PR lands.
+    let message = ''
+    try {
+      await sidePanelApi().close(asEvent(), { tabId: 999999 })
+    } catch (err: any) {
+      message = String(err?.message || err)
+    }
+    expect(message).to.match(/No tab with id/i)
     expect(closes).to.have.lengthOf(0)
+  })
+
+  it('rejects open when tabId and windowId disagree or the window mapping is gone', async () => {
+    const tabId = browser.webContents.id
+    noteUserGesture()
+    let message = ''
+    try {
+      await sidePanelApi().open(asEvent(), { tabId, windowId: 999999 })
+    } catch (err: any) {
+      message = String(err?.message || err)
+    }
+    expect(message).to.match(/tabId does not belong to windowId/i)
+    expect(opens).to.have.lengthOf(0)
+  })
+
+  it('rejects open without a user gesture', async () => {
+    const tabId = browser.webContents.id
+    let message = ''
+    try {
+      await sidePanelApi().open(asEvent(), { tabId })
+    } catch (err: any) {
+      message = String(err?.message || err)
+    }
+    expect(message).to.match(/user gesture/i)
+    expect(opens).to.have.lengthOf(0)
   })
 
   it('rejects open when the panel is disabled for the tab', async () => {
@@ -106,17 +158,24 @@ describe('chrome.sidePanel', () => {
     )
     expect(resolved.enabled).to.equal(false)
 
-    const result = await browser.crx.exec('sidePanel.open', { tabId })
-    expect(result).to.be.an('object')
-    expect(result.__error).to.match(/disabled/i)
+    noteUserGesture()
+    let message = ''
+    try {
+      await sidePanelApi().open(asEvent(), { tabId })
+    } catch (err: any) {
+      message = String(err?.message || err)
+    }
+    expect(message).to.match(/disabled/i)
     expect(opens).to.have.lengthOf(0)
   })
 
   it('rejects invalid panel paths', async () => {
-    const result = await browser.crx.exec('sidePanel.setOptions', {
-      path: 'missing-panel.html',
-    })
-    expect(result).to.be.an('object')
-    expect(result.__error).to.match(/Invalid side panel path/i)
+    let message = ''
+    try {
+      await sidePanelApi().setOptions(asEvent(), { path: 'missing-panel.html' })
+    } catch (err: any) {
+      message = String(err?.message || err)
+    }
+    expect(message).to.match(/Invalid side panel path/i)
   })
 })

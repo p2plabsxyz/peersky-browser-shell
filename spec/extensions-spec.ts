@@ -21,4 +21,9 @@ describe('Extensions', () => {
       })
     }).to.throw()
   })
+
+  it('exposes focusTab for hosts that pin the page tab beside a side panel', () => {
+    // Peersky (and other hosts) call this instead of reaching into private ctx.store.
+    expect(extensions.focusTab).to.be.a('function')
+  })
 })

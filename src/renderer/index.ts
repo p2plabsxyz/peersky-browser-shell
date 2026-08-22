@@ -84,7 +84,9 @@ export const injectExtensionAPIs = () => {
     const connectionId = (contextBridge as any).executeInMainWorld({
       func: () => crypto.randomUUID(),
     })
-    invokeExtension(extensionId, 'runtime.connectNative', {}, connectionId, application)
+    invokeExtension(extensionId, 'runtime.connectNative', {}, connectionId, application).catch(
+      () => {},
+    )
     const onMessage = (_event: Electron.IpcRendererEvent, message: any) => {
       receive(message)
     }
@@ -100,7 +102,7 @@ export const injectExtensionAPIs = () => {
   }
 
   const disconnectNative = (extensionId: string, connectionId: string) => {
-    invokeExtension(extensionId, 'runtime.disconnectNative', {}, connectionId)
+    invokeExtension(extensionId, 'runtime.disconnectNative', {}, connectionId).catch(() => {})
   }
 
   const electronContext = {
@@ -498,22 +500,6 @@ export const injectExtensionAPIs = () => {
             onChanged: new ExtensionEvent('cookies.onChanged'),
           }
         },
-      },
-
-      // Stub: no side panel UI exists here, but MV3 extensions call these
-      // unguarded during boot; an undefined namespace aborts their startup.
-      sidePanel: {
-        shouldInject: () => manifest.manifest_version === 3,
-        factory: () => ({
-          setPanelBehavior: invokeExtension('sidePanel.setPanelBehavior', { noop: true }),
-          getPanelBehavior: invokeExtension('sidePanel.getPanelBehavior', {
-            noop: true,
-            defaultResponse: { openPanelOnActionClick: false },
-          }),
-          setOptions: invokeExtension('sidePanel.setOptions', { noop: true }),
-          getOptions: invokeExtension('sidePanel.getOptions', { noop: true, defaultResponse: {} }),
-          open: invokeExtension('sidePanel.open', { noop: true }),
-        }),
       },
 
       userScripts: {

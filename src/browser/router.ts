@@ -109,10 +109,11 @@ class RoutingDelegate {
     try {
       return await observer.onExtensionMessage(event, extensionId, handlerName, ...args)
     } catch (err) {
-      // Propagate so ipcRenderer.invoke rejects. The preload maps that to
-      // runtime.lastError (callbacks) or a thrown Error (promise APIs).
-      d('handler failed for %s: %o', handlerName, err)
-      throw err
+      // Swallow teardown / handler failures so fire-and-forget callers do not
+      // see unhandled rejections. Promise rejection propagation belongs in a
+      // dedicated cross-cutting change, not sidePanel.
+      d('handler failed for %s (extension context may be torn down): %o', handlerName, err)
+      return undefined
     }
   }
 
