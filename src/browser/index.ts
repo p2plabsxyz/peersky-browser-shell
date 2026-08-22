@@ -15,6 +15,8 @@ import { IdentityAPI } from './api/identity'
 import { ContextMenusAPI } from './api/context-menus'
 import { ManagementAPI } from './api/management'
 import { RuntimeAPI } from './api/runtime'
+import { OffscreenAPI } from './api/offscreen'
+import { UserScriptsAPI } from './api/user-scripts'
 import { WebRequestAPI } from './api/web-request'
 import { DeclarativeNetRequestAPI } from './api/declarative-net-request'
 import { CookiesAPI } from './api/cookies'
@@ -150,6 +152,8 @@ export class ElectronChromeExtensions extends EventEmitter {
     browserAction: BrowserActionAPI
     contextMenus: ContextMenusAPI
     management: ManagementAPI
+    offscreen: OffscreenAPI
+    userScripts: UserScriptsAPI
     declarativeNetRequest: DeclarativeNetRequestAPI
     webRequest: WebRequestAPI
     commands: CommandsAPI
@@ -200,7 +204,10 @@ export class ElectronChromeExtensions extends EventEmitter {
     })
 
     const declarativeNetRequest = new DeclarativeNetRequestAPI(this.ctx)
+    const offscreen = new OffscreenAPI(this.ctx)
     this.api = {
+      offscreen,
+      userScripts: new UserScriptsAPI(this.ctx),
       browserAction: new BrowserActionAPI(this.ctx),
       contextMenus: new ContextMenusAPI(this.ctx),
       management: new ManagementAPI(this.ctx),
@@ -213,7 +220,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       notifications: new NotificationsAPI(this.ctx),
       permissions: new PermissionsAPI(this.ctx),
       proxy: new ProxyAPI(this.ctx),
-      runtime: new RuntimeAPI(this.ctx),
+      runtime: new RuntimeAPI(this.ctx, offscreen),
       alarms: new AlarmsAPI(this.ctx),
       downloads: new DownloadsAPI(this.ctx),
       scripting: new ScriptingAPI(this.ctx),
@@ -276,6 +283,38 @@ export class ElectronChromeExtensions extends EventEmitter {
   }
 
   private listenForExtensions() {
+    // TEMP DEBUG: surface extension service worker output, which otherwise
+    // never reaches the main process. Written to a file so it survives
+    // whichever terminal the app was launched from.
+    try {
+      const debugLog = require('node:path').join(require('node:os').homedir(), 'peersky-sw-debug.log')
+      const write = (line: string) => {
+        try {
+          require('node:fs').appendFileSync(debugLog, `${new Date().toISOString()} ${line}\n`)
+        } catch {}
+      }
+      write('--- session start ---')
+      const sw = this.ctx.session.serviceWorkers as any
+      sw.on('console-message', (_e: any, details: any) => {
+        write(
+          `[console:${details?.versionId}] ${details?.level ?? ''} ${details?.message} (${details?.sourceUrl}:${details?.lineNumber})`,
+        )
+      })
+      sw.on('registration-completed', (_e: any, details: any) => {
+        write(`[registered] scope=${details?.scope}`)
+      })
+      sw.on('running-status-changed', (details: any) => {
+        write(`[status] ${details?.versionId} -> ${details?.runningStatus}`)
+      })
+      const origStart = this.startExtensionServiceWorker.bind(this)
+      ;(this as any).startExtensionServiceWorker = (extension: any) => {
+        write(`[start] ${extension?.id} ${extension?.name} bg=${JSON.stringify(extension?.manifest?.background)}`)
+        return origStart(extension)
+      }
+    } catch (error) {
+      console.error('service worker debug hooks failed:', error)
+    }
+
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     sessionExtensions.addListener('extension-loaded', (_event, extension) => {
       readLoadedExtensionManifest(this.ctx, extension)

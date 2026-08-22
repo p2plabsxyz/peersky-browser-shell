@@ -500,6 +500,62 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      // Stub: no side panel UI exists here, but MV3 extensions call these
+      // unguarded during boot; an undefined namespace aborts their startup.
+      sidePanel: {
+        shouldInject: () => manifest.manifest_version === 3,
+        factory: () => ({
+          setPanelBehavior: invokeExtension('sidePanel.setPanelBehavior', { noop: true }),
+          getPanelBehavior: invokeExtension('sidePanel.getPanelBehavior', {
+            noop: true,
+            defaultResponse: { openPanelOnActionClick: false },
+          }),
+          setOptions: invokeExtension('sidePanel.setOptions', { noop: true }),
+          getOptions: invokeExtension('sidePanel.getOptions', { noop: true, defaultResponse: {} }),
+          open: invokeExtension('sidePanel.open', { noop: true }),
+        }),
+      },
+
+      userScripts: {
+        shouldInject: () => !!manifest.permissions?.includes('userScripts'),
+        factory: () => ({
+          getScripts: invokeExtension('userScripts.getScripts'),
+          register: invokeExtension('userScripts.register'),
+          unregister: invokeExtension('userScripts.unregister'),
+          update: invokeExtension('userScripts.update'),
+          execute: invokeExtension('userScripts.execute'),
+          configureWorld: invokeExtension('userScripts.configureWorld'),
+          getWorldConfigurations: invokeExtension('userScripts.getWorldConfigurations'),
+          resetWorldConfiguration: invokeExtension('userScripts.resetWorldConfiguration'),
+          ExecutionWorld: { MAIN: 'MAIN', USER_SCRIPT: 'USER_SCRIPT' },
+        }),
+      },
+
+      offscreen: {
+        factory: () => ({
+          createDocument: invokeExtension('offscreen.createDocument'),
+          closeDocument: invokeExtension('offscreen.closeDocument'),
+          hasDocument: invokeExtension('offscreen.hasDocument'),
+          Reason: {
+            TESTING: 'TESTING',
+            AUDIO_PLAYBACK: 'AUDIO_PLAYBACK',
+            IFRAME_SCRIPTING: 'IFRAME_SCRIPTING',
+            DOM_SCRAPING: 'DOM_SCRAPING',
+            BLOBS: 'BLOBS',
+            DOM_PARSER: 'DOM_PARSER',
+            USER_MEDIA: 'USER_MEDIA',
+            DISPLAY_MEDIA: 'DISPLAY_MEDIA',
+            WEB_RTC: 'WEB_RTC',
+            CLIPBOARD: 'CLIPBOARD',
+            LOCAL_STORAGE: 'LOCAL_STORAGE',
+            WORKERS: 'WORKERS',
+            BATTERY_STATUS: 'BATTERY_STATUS',
+            MATCH_MEDIA: 'MATCH_MEDIA',
+            GEOLOCATION: 'GEOLOCATION',
+          },
+        }),
+      },
+
       declarativeNetRequest: {
         factory: (base) => {
           return {
@@ -764,6 +820,7 @@ export const injectExtensionAPIs = () => {
             electron.connectNative(extensionId, application, receive, disconnect, callback)
             return port
           }
+          patched.getContexts = invokeExtension('runtime.getContexts')
           patched.openOptionsPage = invokeExtension('runtime.openOptionsPage')
           patched.sendNativeMessage = invokeExtension('runtime.sendNativeMessage')
           return patched
@@ -1043,31 +1100,43 @@ export const injectExtensionAPIs = () => {
                 const existing = onBeforeRequestWrapperMap.get(callback)
                 if (existing) return
 
-                invokeExtension('webRequest.addOnBeforeRequestListener')(filter, extraInfoSpec)
+                // The registration id routes events: each dispatch is stamped
+                // with the target listener's id, and a wrapper only answers
+                // events addressed to it. Without this every wrapper on the
+                // shared channel answered every event, and the first response
+                // won — another listener's verdict could cancel the request.
+                const myIdPromise = Promise.resolve(
+                  invokeExtension('webRequest.addOnBeforeRequestListener')(filter, extraInfoSpec),
+                ).catch(() => undefined)
 
                 const wrapper = (details: chrome.webRequest.WebRequestBodyDetails) => {
                   const reqId = details && (details as any).requestId
                   const listenerId = details && (details as any).listenerId
-                  Promise.resolve()
-                    .then(() => callback(details))
-                    .then((result) => {
-                      if (reqId != null && listenerId != null) {
-                        invokeExtension('webRequest.onBeforeRequest.response')(
-                          reqId,
-                          listenerId,
-                          result || undefined,
-                        ).catch(() => {})
-                      }
-                    })
-                    .catch(() => {
-                      if (reqId != null && listenerId != null) {
-                        invokeExtension('webRequest.onBeforeRequest.response')(
-                          reqId,
-                          listenerId,
-                          undefined,
-                        ).catch(() => {})
-                      }
-                    })
+                  myIdPromise.then((myId: any) => {
+                    if (myId != null && listenerId != null && listenerId !== myId) return
+                    return Promise.resolve()
+                      .then(() => callback(details))
+                      .then(
+                        (result) => {
+                          if (reqId != null && listenerId != null) {
+                            invokeExtension('webRequest.onBeforeRequest.response')(
+                              reqId,
+                              listenerId,
+                              result || undefined,
+                            ).catch(() => {})
+                          }
+                        },
+                        () => {
+                          if (reqId != null && listenerId != null) {
+                            invokeExtension('webRequest.onBeforeRequest.response')(
+                              reqId,
+                              listenerId,
+                              undefined,
+                            ).catch(() => {})
+                          }
+                        },
+                      )
+                  })
                 }
 
                 onBeforeRequestWrapperMap.set(callback, wrapper)
@@ -1113,12 +1182,16 @@ export const injectExtensionAPIs = () => {
                 const existing = onBeforeSendHeadersWrapperMap.get(callback)
                 if (existing) return
 
-                invokeExtension('webRequest.addOnBeforeSendHeadersListener')(filter, extraInfoSpec)
+                const myIdPromise = Promise.resolve(
+                  invokeExtension('webRequest.addOnBeforeSendHeadersListener')(filter, extraInfoSpec),
+                ).catch(() => undefined)
 
                 const wrapper = (details: chrome.webRequest.WebRequestHeadersDetails) => {
                   const reqId = details && (details as any).requestId
                   const listenerId = details && (details as any).listenerId
-                  Promise.resolve()
+                  myIdPromise.then((myId: any) => {
+                    if (myId != null && listenerId != null && listenerId !== myId) return
+                    return Promise.resolve()
                     .then(() => callback(details))
                     .then((result) => {
                       if (reqId != null && listenerId != null) {
@@ -1138,6 +1211,7 @@ export const injectExtensionAPIs = () => {
                         ).catch(() => {})
                       }
                     })
+                  })
                 }
 
                 onBeforeSendHeadersWrapperMap.set(callback, wrapper)
@@ -1212,31 +1286,38 @@ export const injectExtensionAPIs = () => {
                 const existing = onHeadersReceivedWrapperMap.get(callback)
                 if (existing) return
 
-                invokeExtension('webRequest.addOnHeadersReceivedListener')(filter, extraInfoSpec)
+                const myIdPromise = Promise.resolve(
+                  invokeExtension('webRequest.addOnHeadersReceivedListener')(filter, extraInfoSpec),
+                ).catch(() => undefined)
 
                 const wrapper = (details: chrome.webRequest.WebResponseHeadersDetails) => {
                   const reqId = details && (details as any).requestId
                   const listenerId = details && (details as any).listenerId
-                  Promise.resolve()
-                    .then(() => callback(details))
-                    .then((result) => {
-                      if (reqId != null && listenerId != null) {
-                        invokeExtension('webRequest.onHeadersReceived.response')(
-                          reqId,
-                          listenerId,
-                          result || undefined,
-                        ).catch(() => {})
-                      }
-                    })
-                    .catch(() => {
-                      if (reqId != null && listenerId != null) {
-                        invokeExtension('webRequest.onHeadersReceived.response')(
-                          reqId,
-                          listenerId,
-                          undefined,
-                        ).catch(() => {})
-                      }
-                    })
+                  myIdPromise.then((myId: any) => {
+                    if (myId != null && listenerId != null && listenerId !== myId) return
+                    return Promise.resolve()
+                      .then(() => callback(details))
+                      .then(
+                        (result) => {
+                          if (reqId != null && listenerId != null) {
+                            invokeExtension('webRequest.onHeadersReceived.response')(
+                              reqId,
+                              listenerId,
+                              result || undefined,
+                            ).catch(() => {})
+                          }
+                        },
+                        () => {
+                          if (reqId != null && listenerId != null) {
+                            invokeExtension('webRequest.onHeadersReceived.response')(
+                              reqId,
+                              listenerId,
+                              undefined,
+                            ).catch(() => {})
+                          }
+                        },
+                      )
+                  })
                 }
 
                 onHeadersReceivedWrapperMap.set(callback, wrapper)
@@ -1526,9 +1607,13 @@ export const injectExtensionAPIs = () => {
     })
 
     // Remove access to internals
+
     delete (globalThis as any).electron
 
-    Object.freeze(chrome)
+    // Chrome does not freeze the chrome object, and extensions rely on that:
+    // compatibility shims assign to it (e.g. `chrome.browserAction = chrome.action`),
+    // which throws in strict-mode module workers when frozen and fails the
+    // service worker's script evaluation (registration status 15).
 
     void 0 // no return
   }
