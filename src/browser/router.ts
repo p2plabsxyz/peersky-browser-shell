@@ -109,6 +109,9 @@ class RoutingDelegate {
     try {
       return await observer.onExtensionMessage(event, extensionId, handlerName, ...args)
     } catch (err) {
+      // Swallow teardown / handler failures so fire-and-forget callers do not
+      // see unhandled rejections. Promise rejection propagation belongs in a
+      // dedicated cross-cutting change, not sidePanel.
       d('handler failed for %s (extension context may be torn down): %o', handlerName, err)
       return undefined
     }

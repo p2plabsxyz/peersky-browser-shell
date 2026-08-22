@@ -99,7 +99,7 @@ describe('chrome.storage.sync', () => {
     it('fires when storage is removed', async () => {
       await browser.crx.exec('storage.sync.set', { toBeRemoved: 123 })
       // Let the onChanged from `set` flush so event-once only observes `remove`.
-      await new Promise<void>((resolve) => setTimeout(resolve, 50))
+      await new Promise<void>((resolve) => setTimeout(resolve, 100))
 
       const eventPromise = browser.crx.eventOnce('storage.onChanged')
       await browser.crx.exec('storage.sync.remove', 'toBeRemoved')

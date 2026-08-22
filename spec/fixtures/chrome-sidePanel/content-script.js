@@ -17,23 +17,32 @@ async function exec(action) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(action, (result) => {
         if (chrome.runtime.lastError) {
-          reject(chrome.runtime.lastError.message)
-        } else {
-          resolve(result)
+          reject(new Error(chrome.runtime.lastError.message))
+          return
         }
+        resolve(result)
       })
     })
   }
 
+  // Retry transport failures only (background may not be ready yet).
   let result
+  let lastError
   for (let i = 0; i < 3; i++) {
     try {
       result = await send()
+      lastError = undefined
       break
     } catch (e) {
+      lastError = e
       console.error(e)
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
+  }
+
+  if (lastError) {
+    sendIpc('success', { __error: String(lastError.message || lastError) })
+    return
   }
 
   sendIpc(action && action.type === 'event-once' ? 'event-success' : 'success', result)
@@ -56,4 +65,3 @@ chrome.runtime.onMessage.addListener((message) => {
     }
   }
 })
-

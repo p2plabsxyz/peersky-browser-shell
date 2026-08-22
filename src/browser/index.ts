@@ -34,6 +34,7 @@ import { resolvePartition } from './partition'
 import { ExtensionStateStore } from './state-store'
 import { AlarmsAPI } from './api/alarms'
 import { DownloadsAPI } from './api/downloads'
+import { SidePanelAPI } from './api/side-panel'
 
 function checkVersion() {
   const electronVersion = process.versions.electron
@@ -166,6 +167,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     alarms: AlarmsAPI
     downloads: DownloadsAPI
     scripting: ScriptingAPI
+    sidePanel: SidePanelAPI
     storageSync: StorageSyncAPI
     tabs: TabsAPI
     webNavigation: WebNavigationAPI
@@ -222,6 +224,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       alarms: new AlarmsAPI(this.ctx),
       downloads: new DownloadsAPI(this.ctx),
       scripting: new ScriptingAPI(this.ctx),
+      sidePanel: new SidePanelAPI(this.ctx),
       storageSync: new StorageSyncAPI(this.ctx),
       tabs: new TabsAPI(this.ctx),
       webNavigation: new WebNavigationAPI(this.ctx),
@@ -413,6 +416,30 @@ export class ElectronChromeExtensions extends EventEmitter {
   /** Notify extension system that the active tab has changed. */
   selectTab(tab: Electron.WebContents) {
     this.checkWebContentsArgument(tab)
+    if (this.ctx.store.tabs.has(tab)) {
+      this.api.tabs.onActivated(tab.id)
+    }
+  }
+
+  /**
+   * Mark `tab` as the focused page tab for `window`.
+   *
+   * Hosts with a docked side panel use this so APIs like `tabs.getCurrent`
+   * resolve to the page, not the panel guest. Supported public replacement
+   * for reaching into `ctx.store`.
+   */
+  focusTab(tab: Electron.WebContents, window: Electron.BaseWindow) {
+    this.checkWebContentsArgument(tab)
+    if (!window || (typeof (window as any).isDestroyed === 'function' && (window as any).isDestroyed())) {
+      throw new Error('focusTab requires a live browser window')
+    }
+    this.ctx.store.lastFocusedWindowId = window.id
+    if (!this.ctx.store.tabs.has(tab)) {
+      this.ctx.store.addTab(tab, window)
+    } else if (this.ctx.store.tabToWindow.get(tab) !== window) {
+      this.ctx.store.tabToWindow.set(tab, window)
+    }
+    this.ctx.store.setActiveTab(tab)
     if (this.ctx.store.tabs.has(tab)) {
       this.api.tabs.onActivated(tab.id)
     }

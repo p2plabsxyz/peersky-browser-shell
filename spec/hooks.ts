@@ -51,6 +51,8 @@ export const useExtensionBrowser = (opts: {
   extensionName: string
   openDevTools?: boolean
   assignTabDetails?: ChromeExtensionImpl['assignTabDetails']
+  openSidePanel?: ChromeExtensionImpl['openSidePanel']
+  closeSidePanel?: ChromeExtensionImpl['closeSidePanel']
 }) => {
   let w: Electron.BrowserWindow
   let extensions: ElectronChromeExtensions
@@ -77,6 +79,8 @@ export const useExtensionBrowser = (opts: {
       assignTabDetails(details, tab) {
         opts.assignTabDetails?.(details, tab)
       },
+      openSidePanel: opts.openSidePanel,
+      closeSidePanel: opts.closeSidePanel,
     })
 
     extension = await customSession.loadExtension(path.join(fixtures, opts.extensionName))
@@ -142,7 +146,10 @@ export const useExtensionBrowser = (opts: {
       },
 
       async eventOnce(eventName: string) {
-        const p = emittedOnce(ipcMain, 'success')
+        // Use a dedicated channel so a concurrent crx.exec()'s `success`
+        // cannot resolve this waiter (e.g. storage.remove completing before
+        // storage.onChanged is delivered).
+        const p = emittedOnce(ipcMain, 'event-success')
         await w.webContents.executeJavaScript(
           `exec('${JSON.stringify({ type: 'event-once', name: eventName })}')`,
         )

@@ -64,6 +64,11 @@ export const injectExtensionAPIs = () => {
       return
     }
 
+    // Promise-style callers must observe failures as rejections.
+    if (lastError) {
+      if (rt) delete rt.lastError
+      throw new Error(lastError.message)
+    }
     if (rt) delete rt.lastError
     return result
   }
@@ -79,7 +84,9 @@ export const injectExtensionAPIs = () => {
     const connectionId = (contextBridge as any).executeInMainWorld({
       func: () => crypto.randomUUID(),
     })
-    invokeExtension(extensionId, 'runtime.connectNative', {}, connectionId, application)
+    invokeExtension(extensionId, 'runtime.connectNative', {}, connectionId, application).catch(
+      () => {},
+    )
     const onMessage = (_event: Electron.IpcRendererEvent, message: any) => {
       receive(message)
     }
@@ -95,7 +102,7 @@ export const injectExtensionAPIs = () => {
   }
 
   const disconnectNative = (extensionId: string, connectionId: string) => {
-    invokeExtension(extensionId, 'runtime.disconnectNative', {}, connectionId)
+    invokeExtension(extensionId, 'runtime.disconnectNative', {}, connectionId).catch(() => {})
   }
 
   const electronContext = {
@@ -393,6 +400,23 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      sidePanel: {
+        shouldInject: () =>
+          !!(manifest.permissions as string[] | undefined)?.includes('sidePanel'),
+        factory: (base) => {
+          return {
+            ...base,
+            setOptions: invokeExtension('sidePanel.setOptions'),
+            getOptions: invokeExtension('sidePanel.getOptions'),
+            setPanelBehavior: invokeExtension('sidePanel.setPanelBehavior'),
+            getPanelBehavior: invokeExtension('sidePanel.getPanelBehavior'),
+            getLayout: invokeExtension('sidePanel.getLayout'),
+            open: invokeExtension('sidePanel.open'),
+            close: invokeExtension('sidePanel.close'),
+          }
+        },
+      },
+
       commands: {
         factory: (base) => {
           return {
@@ -476,22 +500,6 @@ export const injectExtensionAPIs = () => {
             onChanged: new ExtensionEvent('cookies.onChanged'),
           }
         },
-      },
-
-      // Stub: no side panel UI exists here, but MV3 extensions call these
-      // unguarded during boot; an undefined namespace aborts their startup.
-      sidePanel: {
-        shouldInject: () => manifest.manifest_version === 3,
-        factory: () => ({
-          setPanelBehavior: invokeExtension('sidePanel.setPanelBehavior', { noop: true }),
-          getPanelBehavior: invokeExtension('sidePanel.getPanelBehavior', {
-            noop: true,
-            defaultResponse: { openPanelOnActionClick: false },
-          }),
-          setOptions: invokeExtension('sidePanel.setOptions', { noop: true }),
-          getOptions: invokeExtension('sidePanel.getOptions', { noop: true, defaultResponse: {} }),
-          open: invokeExtension('sidePanel.open', { noop: true }),
-        }),
       },
 
       userScripts: {

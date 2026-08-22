@@ -26,4 +26,17 @@ export interface ChromeExtensionImpl {
     extension: Electron.Extension,
     permissions: chrome.permissions.Permissions,
   ): Promise<boolean>
+
+  openSidePanel?(details: {
+    extension: Electron.Extension
+    path: string
+    tabId?: number
+    windowId?: number
+  }): Promise<void> | void
+
+  closeSidePanel?(details: {
+    extension: Electron.Extension
+    tabId?: number
+    windowId?: number
+  }): Promise<void> | void
 }
