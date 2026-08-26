@@ -1,4 +1,5 @@
 import { app, session as electronSession } from 'electron'
+import debug from 'debug'
 import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
@@ -110,6 +111,8 @@ const sessionMap = new WeakMap<Electron.Session, ElectronChromeExtensions>()
 /**
  * Provides an implementation of various Chrome extension APIs to a session.
  */
+const d = debug('electron-chrome-extensions:worker')
+
 export class ElectronChromeExtensions extends EventEmitter {
   /** Retrieve an instance of this class associated with the given session. */
   static fromSession(session: Electron.Session) {
@@ -283,38 +286,6 @@ export class ElectronChromeExtensions extends EventEmitter {
   }
 
   private listenForExtensions() {
-    // TEMP DEBUG: surface extension service worker output, which otherwise
-    // never reaches the main process. Written to a file so it survives
-    // whichever terminal the app was launched from.
-    try {
-      const debugLog = require('node:path').join(require('node:os').homedir(), 'peersky-sw-debug.log')
-      const write = (line: string) => {
-        try {
-          require('node:fs').appendFileSync(debugLog, `${new Date().toISOString()} ${line}\n`)
-        } catch {}
-      }
-      write('--- session start ---')
-      const sw = this.ctx.session.serviceWorkers as any
-      sw.on('console-message', (_e: any, details: any) => {
-        write(
-          `[console:${details?.versionId}] ${details?.level ?? ''} ${details?.message} (${details?.sourceUrl}:${details?.lineNumber})`,
-        )
-      })
-      sw.on('registration-completed', (_e: any, details: any) => {
-        write(`[registered] scope=${details?.scope}`)
-      })
-      sw.on('running-status-changed', (details: any) => {
-        write(`[status] ${details?.versionId} -> ${details?.runningStatus}`)
-      })
-      const origStart = this.startExtensionServiceWorker.bind(this)
-      ;(this as any).startExtensionServiceWorker = (extension: any) => {
-        write(`[start] ${extension?.id} ${extension?.name} bg=${JSON.stringify(extension?.manifest?.background)}`)
-        return origStart(extension)
-      }
-    } catch (error) {
-      console.error('service worker debug hooks failed:', error)
-    }
-
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     sessionExtensions.addListener('extension-loaded', (_event, extension) => {
       readLoadedExtensionManifest(this.ctx, extension)
@@ -358,7 +329,11 @@ export class ElectronChromeExtensions extends EventEmitter {
 
     const scope = `chrome-extension://${extension.id}/`
     this.ctx.session.serviceWorkers.startWorkerForScope(scope).catch((err) => {
-      console.error(`Failed to start service worker for ${extension.id} (${extension.name}):`, err)
+      // Warming the worker is an optimisation, not a requirement: at this point
+      // in the lifecycle the registration often does not exist yet, and Chromium
+      // starts the worker on demand regardless. A failure here is the normal
+      // case for most extensions and is not worth reporting as an error.
+      d('could not pre-start service worker for %s (%s): %o', extension.id, extension.name, err)
     })
   }
 

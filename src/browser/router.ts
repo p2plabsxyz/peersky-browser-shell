@@ -11,6 +11,15 @@ debug.formatters.r = (value: any) => {
   return value ? JSON.stringify(value, shortenValues, '  ') : value
 }
 
+/**
+ * How long to leave an extension's service worker alone after it fails to start.
+ *
+ * A worker that cannot start cannot start for the next event either, and a busy
+ * extension is the target of many events a second, so retrying per event costs a
+ * round trip each time and produces a line of output each time.
+ */
+const SW_START_RETRY_DELAY_MS = 30_000
+
 export type IpcEvent = Electron.IpcMainEvent | Electron.IpcMainServiceWorkerEvent
 export type IpcInvokeEvent = Electron.IpcMainInvokeEvent | Electron.IpcMainServiceWorkerInvokeEvent
 export type IpcAnyEvent = IpcEvent | IpcInvokeEvent
@@ -252,6 +261,8 @@ export class ExtensionRouter {
    * prevent them from being terminated.
    */
   private extensionHosts: Set<Electron.WebContents> = new Set()
+  /** extensionId -> when to retry its worker, and what was dropped meanwhile */
+  private swStartFailures: Map<string, { retryAfter: number; suppressed: number }> = new Map()
 
   private extensionWorkers: Set<any> = new Set()
 
@@ -347,6 +358,66 @@ export class ExtensionRouter {
     }
   }
 
+  /**
+   * Start an extension's service worker so an event can be delivered to it.
+   *
+   * Resolves null when there is nothing to deliver to — either the worker just
+   * failed to start, or it is inside the retry delay from an earlier failure.
+   * Callers treat that as "not delivered" rather than as an error to report,
+   * because reporting is handled here, once per retry window rather than once
+   * per event.
+   */
+  private async startExtensionWorker(extensionId: string, eventName: string) {
+    const failure = this.swStartFailures.get(extensionId)
+    if (failure && Date.now() < failure.retryAfter) {
+      failure.suppressed++
+      d('skipping service worker start for %s (%s): within retry delay', extensionId, eventName)
+      return null
+    }
+
+    try {
+      const serviceWorker = await this.session.serviceWorkers.startWorkerForScope(
+        `chrome-extension://${extensionId}/`,
+      )
+      const recovered = this.swStartFailures.get(extensionId)
+      if (recovered) {
+        this.swStartFailures.delete(extensionId)
+        console.log(
+          `[electron-chrome-extensions] service worker for ${extensionId} started; ` +
+            `${recovered.suppressed} event(s) were dropped while it was down`,
+        )
+      }
+      return serviceWorker
+    } catch (error) {
+      this.reportWorkerStartFailure(extensionId, eventName, error)
+      return null
+    }
+  }
+
+  /**
+   * Report a worker that would not start, naming it and what it cost.
+   *
+   * Only reached on an actual attempt, and attempts are spaced by
+   * SW_START_RETRY_DELAY_MS, so a permanently broken worker costs one line per
+   * retry window instead of one per event.
+   */
+  private reportWorkerStartFailure(extensionId: string, eventName: string, error: unknown) {
+    const previous = this.swStartFailures.get(extensionId)
+    const suppressed = previous?.suppressed ?? 0
+    this.swStartFailures.set(extensionId, {
+      retryAfter: Date.now() + SW_START_RETRY_DELAY_MS,
+      suppressed: 0,
+    })
+
+    const dropped = suppressed > 0 ? ` and ${suppressed} further event(s)` : ''
+    const cause = error instanceof Error ? error.message : String(error)
+    console.error(
+      `[electron-chrome-extensions] service worker for ${extensionId} failed to start, so ` +
+        `'${eventName}'${dropped} did not reach it. Retrying in ${SW_START_RETRY_DELAY_MS / 1000}s. ` +
+        `Cause: ${cause}`,
+    )
+  }
+
   private deliverToServiceWorkerOrHost(
     listener: EventListener,
     extensionId: string,
@@ -355,26 +426,20 @@ export class ExtensionRouter {
     delayMs: number,
   ) {
     if (listener.type === 'service-worker') {
-      const scope = `chrome-extension://${extensionId}/`
       const argsCopy = [...args]
-      this.session.serviceWorkers
-        .startWorkerForScope(scope)
-        .then((serviceWorker) => {
-          const send = () => {
-            if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
-            try {
-              serviceWorker.send(ipcName, ...argsCopy)
-            } catch (err) {
-              d('service worker send failed for %s: %o', ipcName, err)
-            }
+      void this.startExtensionWorker(extensionId, ipcName).then((serviceWorker) => {
+        if (!serviceWorker) return
+        const send = () => {
+          if ((serviceWorker as any).isDestroyed?.()) return
+          try {
+            serviceWorker.send(ipcName, ...argsCopy)
+          } catch (err) {
+            d('service worker send failed for %s: %o', ipcName, err)
           }
-          if (delayMs > 0) setTimeout(send, delayMs)
-          else send()
-        })
-        .catch((error) => {
-          d('failed to send %s to %s', ipcName, extensionId)
-          console.error(error)
-        })
+        }
+        if (delayMs > 0) setTimeout(send, delayMs)
+        else send()
+      })
       return
     }
 
@@ -634,24 +699,18 @@ export class ExtensionRouter {
     ) {
       return
     }
-    const scope = `chrome-extension://${targetExtensionId}/`
     const argsCopy = [...args]
-    this.session.serviceWorkers
-      .startWorkerForScope(scope)
-      .then((serviceWorker) => {
-        if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
-        setTimeout(() => {
-          if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
-          try {
-            serviceWorker.send(ipcName, ...argsCopy)
-          } catch (err) {
-            d('service worker send failed for %s: %o', eventName, err)
-          }
-        }, 400)
-      })
-      .catch((err) => {
-        console.error(err)
-      })
+    void this.startExtensionWorker(targetExtensionId, eventName).then((serviceWorker) => {
+      if (!serviceWorker || (serviceWorker as any).isDestroyed?.()) return
+      setTimeout(() => {
+        if ((serviceWorker as any).isDestroyed?.()) return
+        try {
+          serviceWorker.send(ipcName, ...argsCopy)
+        } catch (err) {
+          d('service worker send failed for %s: %o', eventName, err)
+        }
+      }, 400)
+    })
   }
 
   /** Broadcasts extension event to all extension hosts listening for it. */
