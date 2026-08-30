@@ -1592,6 +1592,27 @@ export const injectExtensionAPIs = () => {
       })
     })
 
+    // Chromium 150 exposes a native `browser` alias in extension contexts as a
+    // SEPARATE object, and extensions that prefer it (webextension-polyfill,
+    // Firefox-first builds) then see the un-shimmed native subset: no privacy,
+    // permissions events, proxy, and so on. Mirror the patched surface onto it
+    // so both globals agree.
+    const browserAlias = (globalThis as any).browser
+    if (browserAlias && browserAlias !== chrome) {
+      Object.keys(apiDefinitions).forEach((apiName) => {
+        const api = (apiDefinitions as any)[apiName] as any
+        if (!api) return
+        if (api.shouldInject && !api.shouldInject()) return
+        try {
+          Object.defineProperty(browserAlias, apiName, {
+            value: (chrome as any)[apiName],
+            enumerable: true,
+            configurable: true,
+          })
+        } catch (_) {}
+      })
+    }
+
     // Remove access to internals
 
     delete (globalThis as any).electron
