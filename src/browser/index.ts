@@ -234,9 +234,12 @@ export class ElectronChromeExtensions extends EventEmitter {
       windows: new WindowsAPI(this.ctx),
     }
 
+    // Must come first: listenForExtensions() starts background service workers,
+    // and a worker started before the preload is registered never receives the
+    // chrome.* APIs.
+    this.prependPreload(opts.modulePath)
     this.listenForExtensions()
     this.listenForAuthRequired()
-    this.prependPreload(opts.modulePath)
   }
 
   private listenForAuthRequired() {
@@ -337,7 +340,7 @@ export class ElectronChromeExtensions extends EventEmitter {
     })
   }
 
-  private async prependPreload(modulePath?: string) {
+  private prependPreload(modulePath?: string) {
     const { session } = this.ctx
 
     const preloadPath = resolvePreloadPath(modulePath)
