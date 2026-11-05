@@ -115,4 +115,125 @@ describe('chrome.webRequest', () => {
 
     expect(sentEvents.map((e) => e.extensionId)).to.deep.equal(['ext-b'])
   })
+
+  // Chrome hands listeners headers as [{ name, value }] and takes changes back
+  // the same way. Electron's { name: value | [values] } made a listener that
+  // looked a header up throw (Browsec's details.responseHeaders.find).
+  it('hands listeners headers as Chrome does', async () => {
+    const { api, handlers, sentEvents } = createHarness()
+    handlers.get('webRequest.addOnHeadersReceivedListener')!(
+      extensionEvent('ext-a'),
+      { urls: ['*://*/*'] },
+      ['responseHeaders'],
+    )
+    handlers.get('webRequest.addOnSendHeadersListener')!(
+      extensionEvent('ext-a'),
+      { urls: ['*://*/*'] },
+      ['requestHeaders'],
+    )
+
+    await api.notifyOnHeadersReceived({
+      ...requestDetails('https://example.com/page'),
+      statusCode: 200,
+      responseHeaders: { 'Content-Type': ['text/html'], 'Set-Cookie': ['a=1', 'b=2'] },
+    })
+    await api.notifyOnSendHeaders({
+      ...requestDetails('https://example.com/page'),
+      requestHeaders: { 'User-Agent': 'PeerSky', Accept: '*/*' },
+    })
+
+    const received = sentEvents.find((e) => e.name === 'webRequest.onHeadersReceived')!.payload
+    expect(received.responseHeaders).to.deep.equal([
+      { name: 'Content-Type', value: 'text/html' },
+      { name: 'Set-Cookie', value: 'a=1' },
+      { name: 'Set-Cookie', value: 'b=2' },
+    ])
+    expect(received.responseHeaders.find((h: any) => h.name === 'Content-Type').value).to.equal(
+      'text/html',
+    )
+    const sent = sentEvents.find((e) => e.name === 'webRequest.onSendHeaders')!.payload
+    expect(sent.requestHeaders).to.deep.equal([
+      { name: 'User-Agent', value: 'PeerSky' },
+      { name: 'Accept', value: '*/*' },
+    ])
+  })
+
+  it("takes a listener's changed headers back, replacing them all as Chrome does", async () => {
+    const { api, handlers, sentEvents } = createHarness()
+    const blocking = extensionEvent('ext-a', ['webRequest', 'webRequestBlocking'])
+    handlers.get('webRequest.addOnHeadersReceivedListener')!(
+      blocking,
+      { urls: ['*://*/*'] },
+      ['blocking', 'responseHeaders'],
+    )
+    handlers.get('webRequest.addOnBeforeSendHeadersListener')!(
+      blocking,
+      { urls: ['*://*/*'] },
+      ['blocking', 'requestHeaders'],
+    )
+
+    const response = api.notifyOnHeadersReceived({
+      ...requestDetails('https://example.com/page'),
+      statusCode: 200,
+      responseHeaders: { 'Content-Type': ['text/html'], 'X-Frame-Options': ['DENY'] },
+    })
+    let payload = sentEvents[sentEvents.length - 1].payload
+    handlers.get('webRequest.onHeadersReceived.response')!(
+      blocking,
+      payload.requestId,
+      payload.listenerId,
+      {
+        responseHeaders: [
+          { name: 'Content-Type', value: 'text/html' },
+          { name: 'X-Added', value: 'yes' },
+        ],
+      },
+    )
+    expect(await response).to.deep.equal({
+      responseHeaders: { 'Content-Type': ['text/html'], 'X-Added': ['yes'] },
+    })
+
+    const request = api.notifyOnBeforeSendHeaders({
+      ...requestDetails('https://example.com/page'),
+      requestHeaders: { Accept: '*/*', Cookie: 'c' },
+    })
+    payload = sentEvents[sentEvents.length - 1].payload
+    handlers.get('webRequest.onBeforeSendHeaders.response')!(
+      blocking,
+      payload.requestId,
+      payload.listenerId,
+      {
+        requestHeaders: [
+          { name: 'Accept', value: 'a' },
+          { name: 'Accept', value: 'b' },
+          { name: 'X-Bin', binaryValue: [104, 105] },
+        ],
+      },
+    )
+    expect(await request).to.deep.equal({ requestHeaders: { Accept: 'a, b', 'X-Bin': 'hi' } })
+  })
+
+  it("still merges a listener that answers with Electron's form", async () => {
+    const { api, handlers, sentEvents } = createHarness()
+    const blocking = extensionEvent('ext-a', ['webRequest', 'webRequestBlocking'])
+    handlers.get('webRequest.addOnHeadersReceivedListener')!(
+      blocking,
+      { urls: ['*://*/*'] },
+      ['blocking', 'responseHeaders'],
+    )
+
+    const response = api.notifyOnHeadersReceived({
+      ...requestDetails('https://example.com/page'),
+      statusCode: 200,
+      responseHeaders: { A: ['1'] },
+    })
+    const payload = sentEvents[sentEvents.length - 1].payload
+    handlers.get('webRequest.onHeadersReceived.response')!(
+      blocking,
+      payload.requestId,
+      payload.listenerId,
+      { responseHeaders: { B: ['2'] } },
+    )
+    expect(await response).to.deep.equal({ responseHeaders: { A: ['1'], B: ['2'] } })
+  })
 })

@@ -86,9 +86,65 @@ describe('chrome.proxy', () => {
 
     expect(setProxyCalls[0]).to.deep.equal({
       mode: 'fixed_servers',
-      proxyRules: 'http=127.0.0.1:8888;https=127.0.0.1:8888;ftp=127.0.0.1:8888',
+      proxyRules: 'http://127.0.0.1:8888',
       proxyBypassRules: 'localhost,127.0.0.1',
     })
+  })
+
+  // Without a scheme on each server, Chromium took an HTTPS proxy for a plain
+  // HTTP one and SOCKS5 for SOCKS4.
+  it('fixed_servers keeps each proxy server its own scheme', async () => {
+    const rulesFor = async (rules: chrome.proxy.ProxyRules) => {
+      const { handlers, setProxyCalls, evt } = createHarness()
+      await handlers.get('proxy.settings.set')!(evt('ext-1'), {
+        value: { mode: 'fixed_servers', rules },
+      })
+      return setProxyCalls[0].proxyRules
+    }
+
+    expect(await rulesFor({ singleProxy: { scheme: 'https', host: 'vpn.example', port: 443 } })).to.equal(
+      'https://vpn.example:443',
+    )
+    expect(await rulesFor({ singleProxy: { scheme: 'socks5', host: '127.0.0.1', port: 1080 } })).to.equal(
+      'socks5://127.0.0.1:1080',
+    )
+    expect(await rulesFor({ singleProxy: { host: '::1', port: 8080 } })).to.equal('http://[::1]:8080')
+    expect(
+      await rulesFor({
+        proxyForHttp: { scheme: 'http', host: 'a.example', port: 80 },
+        proxyForHttps: { scheme: 'https', host: 'b.example', port: 443 },
+        fallbackProxy: { scheme: 'socks5', host: 'c.example', port: 1080 },
+      }),
+    ).to.equal('http=http://a.example:80;https=https://b.example:443;socks=socks5://c.example:1080')
+    // A port that is not one is left out rather than passed on.
+    expect(await rulesFor({ singleProxy: { scheme: 'http', host: 'a.example', port: 70000 } })).to.equal(
+      'http://a.example',
+    )
+  })
+
+  it('fixed_servers refuses rules it cannot pass on, as Chrome does', async () => {
+    for (const rules of [
+      {},
+      { singleProxy: { scheme: 'http', host: 'a.example;direct://', port: 80 } },
+      { singleProxy: { scheme: 'quic', host: 'a.example', port: 443 } },
+      { singleProxy: { scheme: 'http', host: '' } },
+    ] as chrome.proxy.ProxyRules[]) {
+      const { handlers, setProxyCalls, onChangeCalls, evt } = createHarness()
+      let error: Error | undefined
+      try {
+        await handlers.get('proxy.settings.set')!(evt('ext-1'), {
+          value: { mode: 'fixed_servers', rules },
+        })
+      } catch (err) {
+        error = err as Error
+      }
+      expect(error?.message, JSON.stringify(rules)).to.equal("Invalid 'rules' specified.")
+      // Nothing went out directly, and the extension isn't told its proxy is on.
+      expect(setProxyCalls).to.have.length(0)
+      expect(onChangeCalls).to.have.length(0)
+      const out = await handlers.get('proxy.settings.get')!(evt('ext-1'))
+      expect(out.value).to.deep.equal({ mode: 'system' })
+    }
   })
 })
 

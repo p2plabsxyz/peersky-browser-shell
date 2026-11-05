@@ -8,6 +8,7 @@ type ProxySettingDetails = {
 }
 
 const PAC_DATA_MIME_TYPE = 'application/x-ns-proxy-autoconfig'
+const PROXY_SCHEMES = ['http', 'https', 'socks4', 'socks5']
 
 export class ProxyAPI {
   private currentConfig: chrome.proxy.ProxyConfig = { mode: 'system' }
@@ -105,6 +106,9 @@ export class ProxyAPI {
 
     if (mode === 'fixed_servers') {
       const proxyRules = this.resolveProxyRules(config.rules)
+      // Chrome refuses rules it can't read. Setting none sent everything out
+      // directly while the extension went on thinking its proxy was on.
+      if (!proxyRules) throw new Error("Invalid 'rules' specified.")
       const proxyBypassRules = this.resolveBypassRules(config.rules)
       console.log('[ProxyAPI] session.setProxy fixed_servers', {
         proxyRules,
@@ -133,49 +137,23 @@ export class ProxyAPI {
     return `data:${PAC_DATA_MIME_TYPE};base64,${base64Data}`
   }
 
+  // Each server with its own scheme, the way Chrome writes them: without one,
+  // Chromium took an HTTPS proxy for a plain HTTP one and SOCKS5 for SOCKS4.
+  // fallbackProxy goes in the "socks=" slot, which Chromium reads as "for
+  // everything else", whatever the server's scheme.
   private resolveProxyRules(rules?: chrome.proxy.ProxyRules): string | undefined {
     if (!rules) return undefined
+    if (rules.singleProxy) return this.formatProxyUri(rules.singleProxy)
 
     const segments: string[] = []
-
-    // Chrome's `singleProxy` applies to all schemes.
-    // Electron's `proxyRules` expects explicit scheme prefixes (e.g. `http=host:port;https=host:port`).
-    if (rules.singleProxy) {
-      const singleProxy = rules.singleProxy
-      const hostPort = this.formatHostPort(singleProxy)
-      if (!hostPort) return undefined
-
-      if (singleProxy.scheme === 'socks4' || singleProxy.scheme === 'socks5') {
-        return `socks=${hostPort}`
-      }
-
-      return ['http', 'https', 'ftp']
-        .map((s) => `${s}=${hostPort}`)
-        .join(';')
-    }
-
-    const httpRule = this.formatSchemeProxy(rules.proxyForHttp)
-    if (httpRule) segments.push(`http=${httpRule}`)
-
-    const httpsRule = this.formatSchemeProxy(rules.proxyForHttps)
-    if (httpsRule) segments.push(`https=${httpsRule}`)
-
-    const ftpRule = this.formatSchemeProxy(rules.proxyForFtp)
-    if (ftpRule) segments.push(`ftp=${ftpRule}`)
-
-    const fallbackServer = rules.fallbackProxy
-    const fallbackRule = this.formatSchemeProxy(fallbackServer)
-    if (fallbackRule) {
-      if (fallbackServer?.scheme === 'socks4' || fallbackServer?.scheme === 'socks5') {
-        // Electron expects: `socks=host:port`
-        segments.push(`socks=${fallbackRule}`)
-      } else {
-        // Electron expects explicit scheme segments: `http=...;https=...;ftp=...`
-        const scheme = fallbackServer?.scheme
-        if (scheme === 'http' || scheme === 'https' || scheme === 'ftp') {
-          segments.push(`${scheme}=${fallbackRule}`)
-        }
-      }
+    for (const [key, server] of [
+      ['http', rules.proxyForHttp],
+      ['https', rules.proxyForHttps],
+      ['ftp', rules.proxyForFtp],
+      ['socks', rules.fallbackProxy],
+    ] as const) {
+      const uri = this.formatProxyUri(server)
+      if (uri) segments.push(`${key}=${uri}`)
     }
 
     if (segments.length === 0) return undefined
@@ -190,24 +168,24 @@ export class ProxyAPI {
   }
 
   private formatHostPort(server?: chrome.proxy.ProxyServer): string | undefined {
-    if (!server?.host) return undefined
+    if (typeof server?.host !== 'string' || !server.host) return undefined
+    // A host that could end one rule and start another is not a host.
+    if (/[\s;=,/@?#]/.test(server.host)) return undefined
 
     const isIpv6 = server.host.includes(':') && !server.host.startsWith('[')
     const host = isIpv6 ? `[${server.host}]` : server.host
-    const port = typeof server.port === 'number' ? `:${server.port}` : ''
+    const port =
+      Number.isInteger(server.port) && server.port! > 0 && server.port! < 65536 ? `:${server.port}` : ''
     return `${host}${port}`
   }
 
-  private formatSchemeProxy(server?: chrome.proxy.ProxyServer): string | undefined {
+  private formatProxyUri(server?: chrome.proxy.ProxyServer): string | undefined {
     const hostPort = this.formatHostPort(server)
     if (!hostPort) return undefined
 
-    if (server?.scheme === 'socks4' || server?.scheme === 'socks5') {
-      // Electron expects `socks=host:port` (scheme prefix is handled elsewhere).
-      return hostPort
-    }
-
-    return hostPort
+    const scheme = server?.scheme || 'http'
+    if (!PROXY_SCHEMES.includes(scheme)) return undefined
+    return `${scheme}://${hostPort}`
   }
 
   private emitSettingsChange(): void {
