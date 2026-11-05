@@ -24,6 +24,36 @@ export interface WebRequestBlockingResponse {
   }
 }
 
+type ElectronHeaders = Record<string, string | string[]>
+
+// Chrome hands extensions headers as [{ name, value }] and takes them back the
+// same way; Electron's webRequest uses { name: value | [values] }. Extensions
+// such as Browsec read details.responseHeaders as Chrome's array.
+function toChromeHeaders(headers?: ElectronHeaders): chrome.webRequest.HttpHeader[] | undefined {
+  if (!headers) return undefined
+  if (Array.isArray(headers)) return headers
+  const list: chrome.webRequest.HttpHeader[] = []
+  for (const [name, value] of Object.entries(headers)) {
+    for (const one of Array.isArray(value) ? value : [value]) list.push({ name, value: String(one) })
+  }
+  return list
+}
+
+function fromChromeHeaders(list: chrome.webRequest.HttpHeader[]): Record<string, string[]> {
+  const headers: Record<string, string[]> = {}
+  for (const header of list || []) {
+    if (!header || !header.name) continue
+    const value =
+      header.value != null
+        ? String(header.value)
+        : header.binaryValue
+          ? Buffer.from(header.binaryValue).toString()
+          : ''
+    ;(headers[header.name] = headers[header.name] || []).push(value)
+  }
+  return headers
+}
+
 function originsMatch(a: string, b: string): boolean {
   try {
     return new URL(a).origin === new URL(b).origin
@@ -47,8 +77,8 @@ export interface WebRequestDetails {
   documentUrl?: string
   frameAncestors?: { url: string; frameId: number }[]
   requestBody?: chrome.webRequest.WebRequestBody
-  requestHeaders?: Record<string, string | string[]>
-  responseHeaders?: Record<string, string | string[]>
+  requestHeaders?: chrome.webRequest.HttpHeader[]
+  responseHeaders?: chrome.webRequest.HttpHeader[]
   statusCode?: number
   redirectUrl?: string
   ip?: string
@@ -901,8 +931,8 @@ export class WebRequestAPI {
       timeStamp: details.timestamp != null ? details.timestamp : Date.now(),
       initiator: this.resolveInitiator(details),
       requestBody: opts?.includeRequestBody ? this.normalizeRequestBody(details) : undefined,
-      requestHeaders: details.requestHeaders,
-      responseHeaders: details.responseHeaders,
+      requestHeaders: toChromeHeaders(details.requestHeaders),
+      responseHeaders: toChromeHeaders(details.responseHeaders),
       statusCode: details.statusCode,
       ip: details.ip,
       fromCache: details.fromCache,
@@ -1035,7 +1065,13 @@ export class WebRequestAPI {
     const base: Record<string, string | string[]> = { ...(original || {}) }
 
     for (const r of results.values()) {
-      if (r && r.requestHeaders) {
+      if (r && Array.isArray(r.requestHeaders)) {
+        // Chrome's list is the whole new set, so a header left out is gone.
+        for (const key of Object.keys(base)) delete base[key]
+        for (const [key, values] of Object.entries(fromChromeHeaders(r.requestHeaders))) {
+          base[key] = values.join(', ')
+        }
+      } else if (r && r.requestHeaders) {
         Object.assign(base, r.requestHeaders as Record<string, string | string[]>)
       }
     }
@@ -1050,7 +1086,10 @@ export class WebRequestAPI {
     const base: Record<string, string | string[]> = { ...(original || {}) }
 
     for (const r of results.values()) {
-      if (r && r.responseHeaders) {
+      if (r && Array.isArray(r.responseHeaders)) {
+        for (const key of Object.keys(base)) delete base[key]
+        Object.assign(base, fromChromeHeaders(r.responseHeaders))
+      } else if (r && r.responseHeaders) {
         Object.assign(base, r.responseHeaders as Record<string, string | string[]>)
       }
     }
@@ -1160,7 +1199,7 @@ export class WebRequestAPI {
     const baseDetails = this.buildDetails(details as unknown as ElectronRequestDetails)
     const payloadBase: WebRequestDetails = {
       ...baseDetails,
-      requestHeaders: details.requestHeaders as any,
+      requestHeaders: toChromeHeaders(details.requestHeaders),
     }
 
     const matching = this.scopeListenersToInitiatorExtension(
@@ -1233,7 +1272,7 @@ export class WebRequestAPI {
 
     const payloadBase: WebRequestDetails = {
       ...this.buildDetails(details as unknown as ElectronRequestDetails),
-      requestHeaders: details.requestHeaders as any,
+      requestHeaders: toChromeHeaders(details.requestHeaders),
     }
 
     const matching = this.findMatchingListeners(this.onSendHeadersListeners, payloadBase)
@@ -1266,7 +1305,7 @@ export class WebRequestAPI {
     const payloadBase: WebRequestDetails = {
       ...baseDetails,
       statusCode: (details as any).statusCode,
-      responseHeaders: details.responseHeaders as any,
+      responseHeaders: toChromeHeaders(details.responseHeaders),
     }
 
     const matching = this.scopeListenersToInitiatorExtension(
@@ -1343,7 +1382,7 @@ export class WebRequestAPI {
       ...this.buildDetails(details as unknown as ElectronRequestDetails),
       redirectUrl: details.redirectURL,
       statusCode: (details as any).statusCode,
-      responseHeaders: details.responseHeaders as any,
+      responseHeaders: toChromeHeaders(details.responseHeaders),
       ip: (details as any).ip,
       fromCache: (details as any).fromCache,
     }
@@ -1372,7 +1411,7 @@ export class WebRequestAPI {
     const payloadBase: WebRequestDetails = {
       ...this.buildDetails(details as unknown as ElectronRequestDetails),
       statusCode: (details as any).statusCode,
-      responseHeaders: details.responseHeaders as any,
+      responseHeaders: toChromeHeaders(details.responseHeaders),
       ip: (details as any).ip,
       fromCache: (details as any).fromCache,
     }
@@ -1404,7 +1443,7 @@ export class WebRequestAPI {
     const payloadBase: WebRequestDetails = {
       ...this.buildDetails(details as unknown as ElectronRequestDetails),
       statusCode: (details as any).statusCode,
-      responseHeaders: details.responseHeaders as any,
+      responseHeaders: toChromeHeaders(details.responseHeaders),
       ip: (details as any).ip,
       fromCache: (details as any).fromCache,
     }
