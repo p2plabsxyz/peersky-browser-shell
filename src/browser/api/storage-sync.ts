@@ -3,21 +3,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
-
-const FORBIDDEN_STORAGE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
-
-function isForbiddenStorageKey(key: string): boolean {
-  return FORBIDDEN_STORAGE_KEYS.has(key)
-}
-
-function sanitizeLoadedStorage(raw: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = {}
-  for (const k of Object.keys(raw)) {
-    if (isForbiddenStorageKey(k)) continue
-    out[k] = raw[k]
-  }
-  return out
-}
+import { isForbiddenStorageKey, readStorageFile, StorageCrypto, writeStorageFile } from './storage-file'
 
 export class StorageSyncAPI {
   private baseDir: string
@@ -26,6 +12,7 @@ export class StorageSyncAPI {
   private localReady: Promise<void>
   private chainSync = new Map<string, Promise<unknown>>()
   private chainLocal = new Map<string, Promise<unknown>>()
+  private crypto: StorageCrypto = safeStorage
 
   constructor(private ctx: ExtensionContext) {
     this.baseDir = path.join(app.getPath('userData'), 'extension-sync')
@@ -71,59 +58,12 @@ export class StorageSyncAPI {
 
   private load = async (extensionId: string): Promise<Record<string, any>> => {
     await this.ready
-    const filePath = this.getFilePath(extensionId)
-    let buffer: Buffer
-    try {
-      buffer = await fs.readFile(filePath)
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') return {}
-      console.error('Failed to load storage sync data', err)
-      return {}
-    }
-    try {
-      // Storage files may be written either as plaintext JSON (when OS encryption
-      // wasn't available) or as encrypted bytes. `safeStorage.isEncryptionAvailable()`
-      // can change across runs, so detect the format from the file contents.
-      const utf8 = buffer.toString('utf-8')
-      const firstNonWs = utf8.match(/[^\s]/)?.[0]
-      if (firstNonWs === '{' || firstNonWs === '[') {
-        const parsed = JSON.parse(utf8)
-        return sanitizeLoadedStorage(
-          typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? (parsed as Record<string, any>)
-            : {},
-        )
-      }
-      if (safeStorage.isEncryptionAvailable()) {
-        const parsed = JSON.parse(safeStorage.decryptString(buffer))
-        return sanitizeLoadedStorage(
-          typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? (parsed as Record<string, any>)
-            : {},
-        )
-      }
-      throw new Error('Encrypted storage unavailable')
-    } catch (err: any) {
-      console.error('Failed to parse storage sync data', err)
-      return {}
-    }
+    return readStorageFile(this.getFilePath(extensionId), this.crypto, 'sync')
   }
 
   private save = async (extensionId: string, data: Record<string, any>) => {
     await this.ready
-    let json: string
-    try {
-      json = JSON.stringify(data)
-    } catch (err) {
-      throw new Error('Value is not JSON-serializable')
-    }
-    const content = safeStorage.isEncryptionAvailable()
-      ? safeStorage.encryptString(json)
-      : json
-    const filePath = this.getFilePath(extensionId)
-    const tmpPath = `${filePath}.tmp`
-    await fs.writeFile(tmpPath, content, { mode: 0o600 })
-    await fs.rename(tmpPath, filePath)
+    await writeStorageFile(this.getFilePath(extensionId), data, this.crypto)
   }
 
   private get = async (event: ExtensionEvent, keys?: string | string[] | Record<string, any> | null) => {
@@ -245,57 +185,12 @@ export class StorageSyncAPI {
 
   private localLoad = async (extensionId: string): Promise<Record<string, any>> => {
     await this.localReady
-    const filePath = this.getLocalFilePath(extensionId)
-    let buffer: Buffer
-    try {
-      buffer = await fs.readFile(filePath)
-    } catch (err: any) {
-      if (err?.code === 'ENOENT') return {}
-      console.error('Failed to load storage local data', err)
-      return {}
-    }
-    try {
-      // Same format detection as sync storage.
-      const utf8 = buffer.toString('utf-8')
-      const firstNonWs = utf8.match(/[^\s]/)?.[0]
-      if (firstNonWs === '{' || firstNonWs === '[') {
-        const parsed = JSON.parse(utf8)
-        return sanitizeLoadedStorage(
-          typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? (parsed as Record<string, any>)
-            : {},
-        )
-      }
-      if (safeStorage.isEncryptionAvailable()) {
-        const parsed = JSON.parse(safeStorage.decryptString(buffer))
-        return sanitizeLoadedStorage(
-          typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-            ? (parsed as Record<string, any>)
-            : {},
-        )
-      }
-      throw new Error('Encrypted storage unavailable')
-    } catch (err: any) {
-      console.error('Failed to parse storage local data', err)
-      return {}
-    }
+    return readStorageFile(this.getLocalFilePath(extensionId), this.crypto, 'local')
   }
 
   private localSave = async (extensionId: string, data: Record<string, any>) => {
     await this.localReady
-    let json: string
-    try {
-      json = JSON.stringify(data)
-    } catch {
-      throw new Error('Value is not JSON-serializable')
-    }
-    const content = safeStorage.isEncryptionAvailable()
-      ? safeStorage.encryptString(json)
-      : json
-    const filePath = this.getLocalFilePath(extensionId)
-    const tmpPath = `${filePath}.tmp`
-    await fs.writeFile(tmpPath, content, { mode: 0o600 })
-    await fs.rename(tmpPath, filePath)
+    await writeStorageFile(this.getLocalFilePath(extensionId), data, this.crypto)
   }
 
   private localGet = async ({ extension }: ExtensionEvent, keys?: string | string[] | Record<string, any> | null) => {

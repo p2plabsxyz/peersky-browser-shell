@@ -51,6 +51,10 @@ app.on('window-all-closed', () => null)
 
 // Use fake device for Media Stream to replace actual camera and microphone.
 app.commandLine.appendSwitch('use-fake-device-for-media-stream')
+// chrome.storage files are encrypted with safeStorage, whose key on macOS is
+// in the login keychain. A run must not depend on that keychain, or ask for
+// it on a developer's screen: the mock keychain gives every run one key.
+app.commandLine.appendSwitch('use-mock-keychain')
 
 // @ts-ignore
 global.standardScheme = 'app'
