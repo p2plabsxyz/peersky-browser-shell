@@ -3984,7 +3984,7 @@
           },
           "title": "Renamed",
           "url": "/page?bm2",
-          "parentId": "6"
+          "parentId": "<folder>"
         }
       },
       "update.badUrl": {
@@ -4024,6 +4024,433 @@
       },
       "get.removed": {
         "error": "Can't find bookmark for id."
+      },
+      "get.badId": {
+        "error": "Bookmark id is invalid."
+      },
+      "get.emptyList": {
+        "error": "Error in invocation of bookmarks.get([string|array] idOrIdList, optional function callback): Error at parameter 'idOrIdList': Value did not match any choice."
+      },
+      "get.badType": {
+        "error": "Error in invocation of bookmarks.get([string|array] idOrIdList, optional function callback): No matching signature."
+      },
+      "get.mobileHidden": {
+        "error": "Can't find bookmark for id."
+      },
+      "getChildren.root": {
+        "ok": [
+          "1",
+          "2"
+        ]
+      },
+      "getChildren.missing": {
+        "error": "Can't find bookmark for id."
+      },
+      "getSubTree.missing": {
+        "error": "Can't find bookmark for id."
+      },
+      "getRecent.zero": {
+        "error": "Error in invocation of bookmarks.getRecent(integer numberOfItems, optional function callback): Error at parameter 'numberOfItems': Value must be at least 1."
+      },
+      "remove.missing": {
+        "error": "Can't find bookmark for id."
+      },
+      "removeTree.permanent": {
+        "error": "Can't modify the root bookmark folders."
+      },
+      "removeTree.root": {
+        "error": "Can't modify the root bookmark folders."
+      },
+      "update.root": {
+        "error": "Can't modify the root bookmark folders."
+      },
+      "update.missing": {
+        "error": "Can't find parent bookmark for id."
+      },
+      "move.permanent": {
+        "error": "Can't modify the root bookmark folders."
+      },
+      "create.badUrl": {
+        "error": "Invalid URL."
+      },
+      "create.badType": {
+        "error": "Error in invocation of bookmarks.create(bookmarks.CreateDetails bookmark, optional function callback): Error at parameter 'bookmark': Error at property 'parentId': Invalid type: expected string, found integer."
+      },
+      "create.badIndexType": {
+        "error": "Error in invocation of bookmarks.create(bookmarks.CreateDetails bookmark, optional function callback): Error at parameter 'bookmark': Error at property 'index': Invalid type: expected integer, found string."
+      },
+      "create.badIndex": {
+        "error": "Index out of bounds."
+      },
+      "create.negativeIndex": {
+        "error": "Error in invocation of bookmarks.create(bookmarks.CreateDetails bookmark, optional function callback): Error at parameter 'bookmark': Error at property 'index': Value must be at least 0."
+      },
+      "create.noParent": {
+        "ok": {
+          "shape": {
+            "dateAdded": "number",
+            "id": "string",
+            "index": "number",
+            "parentId": "string",
+            "syncing": "boolean",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe default",
+          "url": "/page?bm3",
+          "parentId": "2"
+        }
+      },
+      "create.noTitle": {
+        "ok": {
+          "shape": {
+            "dateAdded": "number",
+            "dateGroupModified": "number",
+            "id": "string",
+            "index": "number",
+            "parentId": "string",
+            "syncing": "boolean",
+            "title": "string"
+          },
+          "title": "",
+          "parentId": "2"
+        }
+      },
+      "create.urlParent": {
+        "error": "Parameter 'parentId' does not specify a folder."
+      },
+      "getChildren.url": {
+        "ok": 0
+      },
+      "getSubTree.url": {
+        "ok": [
+          {
+            "dateAdded": "number",
+            "id": "string",
+            "index": "number",
+            "parentId": "string",
+            "syncing": "boolean",
+            "title": "string",
+            "url": "string"
+          }
+        ]
+      },
+      "move.urlParent": {
+        "error": "Parameter 'parentId' does not specify a folder."
+      },
+      "onChanged.urlOnly": {
+        "event": {
+          "info": {
+            "title": "string",
+            "url": "string"
+          },
+          "url": "/page?bm4"
+        }
+      },
+      "onRemoved.url": {
+        "event": {
+          "shape": {
+            "index": "number",
+            "node": "object",
+            "parentId": "string"
+          },
+          "node": {
+            "shape": {
+              "dateAdded": "number",
+              "id": "string",
+              "syncing": "boolean",
+              "title": "string",
+              "url": "string"
+            },
+            "title": "Probe default",
+            "url": "/page?bm4"
+          },
+          "parentId": "2"
+        }
+      },
+      "getChildren.order": {
+        "ok": [
+          {
+            "title": "Probe inner",
+            "index": 0
+          },
+          {
+            "title": "Probe leaf",
+            "index": 1
+          }
+        ]
+      },
+      "move.intoDescendant": {
+        "error": "Can't move a folder to itself or its descendant."
+      },
+      "move.intoSelf": {
+        "error": "Can't move a folder to itself or its descendant."
+      },
+      "move.toRoot": {
+        "error": "Can't modify the root bookmark folders."
+      },
+      "move.missingParent": {
+        "error": "Can't find parent bookmark for id."
+      },
+      "move.badIndex": {
+        "error": "Index out of bounds."
+      },
+      "onMoved.sameParent": {
+        "event": {
+          "index": 0,
+          "oldIndex": 1,
+          "same": true
+        }
+      },
+      "getChildren.afterMove": {
+        "ok": [
+          {
+            "title": "Probe leaf",
+            "index": 0
+          },
+          {
+            "title": "Probe inner",
+            "index": 1
+          }
+        ]
+      },
+      "update.folderUrl": {
+        "error": "Can't set URL of a bookmark folder."
+      },
+      "update.empty": {
+        "ok": {
+          "shape": {
+            "dateAdded": "number",
+            "id": "string",
+            "index": "number",
+            "parentId": "string",
+            "syncing": "boolean",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe leaf",
+          "url": "/page?leaf",
+          "parentId": "<outer>"
+        }
+      },
+      "onChanged.folder": {
+        "event": {
+          "info": {
+            "title": "string"
+          },
+          "title": "Probe outer 2"
+        }
+      },
+      "search.query": {
+        "ok": [
+          "Probe outer 2"
+        ]
+      },
+      "search.words": {
+        "ok": [
+          "Probe outer 2"
+        ]
+      },
+      "search.prefix": {
+        "ok": [
+          "Probe leaf"
+        ]
+      },
+      "search.inUrl": {
+        "ok": [
+          "Probe leaf"
+        ]
+      },
+      "search.caseless": {
+        "ok": [
+          "Probe leaf"
+        ]
+      },
+      "search.empty": {
+        "ok": 0
+      },
+      "search.emptyObject": {
+        "ok": 3
+      },
+      "search.badUrl": {
+        "ok": 0
+      },
+      "search.title": {
+        "ok": [
+          "Probe outer 2"
+        ]
+      },
+      "search.titlePart": {
+        "ok": 0
+      },
+      "search.queryAndTitle": {
+        "ok": [
+          "Probe leaf"
+        ]
+      },
+      "getRecent.folders": {
+        "ok": [
+          "Probe leaf"
+        ]
+      },
+      "getSubTree.nested": {
+        "ok": [
+          {
+            "title": "Probe leaf",
+            "shape": {
+              "dateAdded": "number",
+              "id": "string",
+              "index": "number",
+              "parentId": "string",
+              "syncing": "boolean",
+              "title": "string",
+              "url": "string"
+            }
+          },
+          {
+            "title": "Probe inner",
+            "shape": {
+              "children": "array",
+              "dateAdded": "number",
+              "dateGroupModified": "number",
+              "id": "string",
+              "index": "number",
+              "parentId": "string",
+              "syncing": "boolean",
+              "title": "string"
+            }
+          }
+        ]
+      },
+      "remove.folderWithChildren": {
+        "error": "Can't remove non-empty folder (use recursive to force)."
+      },
+      "onRemoved.tree": {
+        "event": [
+          {
+            "title": "Probe leaf",
+            "shape": {
+              "dateAdded": "number",
+              "id": "string",
+              "index": "number",
+              "parentId": "string",
+              "syncing": "boolean",
+              "title": "string",
+              "url": "string"
+            }
+          },
+          {
+            "title": "Probe inner",
+            "shape": {
+              "children": "array",
+              "dateAdded": "number",
+              "dateGroupModified": "number",
+              "id": "string",
+              "index": "number",
+              "parentId": "string",
+              "syncing": "boolean",
+              "title": "string"
+            }
+          }
+        ]
+      },
+      "get.innerGone": {
+        "error": "Can't find bookmark for id."
+      },
+      "create.mobile": {
+        "error": "Can't find parent bookmark for id."
+      },
+      "getTree.withMobile": {
+        "ok": [
+          {
+            "id": "1",
+            "title": "Bookmarks Bar",
+            "folderType": "bookmarks-bar",
+            "index": 0
+          },
+          {
+            "id": "2",
+            "title": "Other Bookmarks",
+            "folderType": "other",
+            "index": 1
+          }
+        ]
+      },
+      "getTree.afterMobile": {
+        "ok": 2
+      },
+      "create.javascriptUrl": {
+        "ok": {
+          "shape": {
+            "dateAdded": "number",
+            "id": "string",
+            "index": "number",
+            "parentId": "string",
+            "syncing": "boolean",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe js",
+          "url": "javascript:void(0)",
+          "parentId": "2"
+        }
+      },
+      "create.chromeUrl": {
+        "ok": {
+          "shape": {
+            "dateAdded": "number",
+            "id": "string",
+            "index": "number",
+            "parentId": "string",
+            "syncing": "boolean",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe settings",
+          "url": "chrome://settings/",
+          "parentId": "2"
+        }
+      },
+      "create.relativeUrl": {
+        "error": "Invalid URL."
+      },
+      "get.bar": {
+        "ok": [
+          {
+            "shape": {
+              "dateAdded": "number",
+              "dateGroupModified": "number",
+              "folderType": "string",
+              "id": "string",
+              "index": "number",
+              "parentId": "string",
+              "syncing": "boolean",
+              "title": "string"
+            },
+            "title": "Bookmarks Bar",
+            "folderType": "bookmarks-bar"
+          }
+        ]
+      },
+      "get.other": {
+        "ok": [
+          {
+            "dateAdded": "number",
+            "dateGroupModified": "number",
+            "folderType": "string",
+            "id": "string",
+            "index": "number",
+            "parentId": "string",
+            "syncing": "boolean",
+            "title": "string"
+          }
+        ]
+      },
+      "getTree.end": {
+        "ok": [
+          0,
+          0
+        ]
       }
     },
     "history": {
@@ -4106,6 +4533,127 @@
       },
       "addUrl.bad": {
         "error": "Url is invalid."
+      },
+      "addUrl.noUrl": {
+        "error": "Error in invocation of history.addUrl(history.UrlDetails details, optional function callback): Error at parameter 'details': Missing required property 'url'."
+      },
+      "addUrl.badType": {
+        "error": "Error in invocation of history.addUrl(history.UrlDetails details, optional function callback): Error at parameter 'details': Error at property 'url': Invalid type: expected string, found integer."
+      },
+      "search.noText": {
+        "error": "Error in invocation of history.search(object query, optional function callback): Error at parameter 'query': Missing required property 'text'."
+      },
+      "search.maxNegative": {
+        "error": "Error in invocation of history.search(object query, optional function callback): Error at parameter 'query': Error at property 'maxResults': Value must be at least 0."
+      },
+      "search.badTime": {
+        "error": "Error in invocation of history.search(object query, optional function callback): Error at parameter 'query': Error at property 'startTime': Invalid type: expected number, found string."
+      },
+      "getVisits.bad": {
+        "error": "Url is invalid."
+      },
+      "getVisits.unknown": {
+        "ok": 0
+      },
+      "deleteUrl.bad": {
+        "error": "Url is invalid."
+      },
+      "deleteUrl.unknown": {
+        "ok": "<undefined>"
+      },
+      "deleteRange.noEnd": {
+        "error": "Error in invocation of history.deleteRange(object range, optional function callback): Error at parameter 'range': Missing required property 'endTime'."
+      },
+      "addUrl.chrome": {
+        "ok": "<undefined>"
+      },
+      "addUrl.data": {
+        "ok": "<undefined>"
+      },
+      "addUrl.about": {
+        "ok": "<undefined>"
+      },
+      "search.schemes": {
+        "ok": [
+          "data"
+        ]
+      },
+      "onVisited.addUrl": {
+        "event": {
+          "shape": {
+            "id": "string",
+            "lastVisitTime": "number",
+            "title": "string",
+            "typedCount": "number",
+            "url": "string",
+            "visitCount": "number"
+          },
+          "visitCount": 1,
+          "typedCount": 1,
+          "title": ""
+        }
+      },
+      "search.twice": {
+        "ok": [
+          {
+            "visitCount": 2,
+            "typedCount": 1
+          }
+        ]
+      },
+      "getVisits.twice": {
+        "ok": [
+          {
+            "transition": "typed",
+            "referringVisitId": "0"
+          },
+          {
+            "transition": "link",
+            "referringVisitId": "0"
+          }
+        ]
+      },
+      "search.future": {
+        "ok": 0
+      },
+      "search.endTime": {
+        "ok": 0
+      },
+      "search.default24h": {
+        "ok": 1
+      },
+      "search.title": {
+        "ok": [
+          {
+            "title": "Probe page",
+            "visitCount": 1,
+            "typedCount": 0
+          }
+        ]
+      },
+      "search.byTitle": {
+        "ok": true
+      },
+      "getVisits.link": {
+        "ok": [
+          "link"
+        ]
+      },
+      "search.noFrames": {
+        "ok": 0
+      },
+      "onVisitRemoved.all": {
+        "event": {
+          "shape": {
+            "allHistory": "boolean",
+            "urls": "array"
+          },
+          "allHistory": true,
+          "urls": []
+        }
+      },
+      "search.afterDeleteAll": {
+        "ok": 0
       }
     },
     "topSites": {
@@ -4771,6 +5319,21 @@
       },
       "query.empty": {
         "error": "Empty text parameter."
+      },
+      "query.noText": {
+        "error": "Error in invocation of search.query(search.QueryInfo queryInfo, optional function callback): Error at parameter 'queryInfo': Missing required property 'text'."
+      },
+      "query.badText": {
+        "error": "Error in invocation of search.query(search.QueryInfo queryInfo, optional function callback): Error at parameter 'queryInfo': Error at property 'text': Invalid type: expected string, found integer."
+      },
+      "query.tabAndDisposition": {
+        "error": "Cannot set both 'disposition' and 'tabId'."
+      },
+      "query.missingTab": {
+        "error": "No tab with id: 987654."
+      },
+      "query.badTab": {
+        "error": "Error in invocation of search.query(search.QueryInfo queryInfo, optional function callback): Error at parameter 'queryInfo': Error at property 'tabId': Invalid type: expected integer, found string."
       }
     },
     "omnibox": {
@@ -4779,6 +5342,135 @@
       },
       "setDefaultSuggestion.badXml": {
         "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: match line 1 and fragment\n<fragment>Run <match>probe</fragment>"
+      },
+      "setDefaultSuggestion.styles": {
+        "ok": "<undefined>"
+      },
+      "setDefaultSuggestion.nested": {
+        "ok": "<undefined>"
+      },
+      "setDefaultSuggestion.unknownTag": {
+        "ok": "<undefined>"
+      },
+      "setDefaultSuggestion.badEntity": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Entity 'foo' not defined\n<fragment>a &foo; b</fragment>"
+      },
+      "setDefaultSuggestion.bareAmp": {
+        "error": "Invalid XML: unbalanced elements: Entity: line 1: parser error : xmlParseEntityRef: no name\n<fragment>a & b</fragment>"
+      },
+      "setDefaultSuggestion.bareLt": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : StartTag: invalid element name\n<fragment>a < b</fragment>"
+      },
+      "setDefaultSuggestion.strayClose": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: fragment line 1 and dim\n<fragment>a </dim> b</fragment>"
+      },
+      "setDefaultSuggestion.unclosedTwo": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: dim line 1 and fragment\n<fragment><match><dim>x</fragment>"
+      },
+      "setDefaultSuggestion.badAttr": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : AttValue: \" or ' expected\n<fragment><match a=1>x</match></fragment>\n                   ^\nEntity: line 1: parser error : attributes construct error\n<fragment><match a=1>x</match></fragment>\n                   ^\nEntity: line 1: parser error : Couldn't find end of Start Tag match\n<fragment><match a=1>x</match></fragment>"
+      },
+      "setDefaultSuggestion.long": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: match line 1 and fragment\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx <match></fragment>"
+      },
+      "setDefaultSuggestion.longBefore": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: fragment line 1 and dim\n<fragment>yyyyyyyyyyyyyyyyyyyyyyyyyyyyyy</dim>zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"
+      },
+      "setDefaultSuggestion.multiline": {
+        "error": "Invalid XML: bad content: Entity: line 2: parser error : Opening and ending tag mismatch: match line 2 and fragment\n<match>two</fragment>"
+      },
+      "setDefaultSuggestion.cdata": {
+        "ok": "<undefined>"
+      },
+      "setDefaultSuggestion.comment": {
+        "ok": "<undefined>"
+      },
+      "setDefaultSuggestion.empty": {
+        "error": "Error in invocation of omnibox.setDefaultSuggestion(omnibox.DefaultSuggestResult suggestion, optional function callback): Error at parameter 'suggestion': Error at property 'description': String must have at least 1 characters; found 0."
+      },
+      "setDefaultSuggestion.noSemicolon": {
+        "error": "Invalid XML: unbalanced elements: Entity: line 1: parser error : EntityRef: expecting ';'\n<fragment>a &amp b</fragment>"
+      },
+      "setDefaultSuggestion.badHexRef": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : CharRef: invalid hexadecimal value\n<fragment>a &#xZZ; b</fragment>\n               ^\nEntity: line 1: parser error : xmlParseCharRef: invalid xmlChar value 0\n<fragment>a &#xZZ; b</fragment>"
+      },
+      "setDefaultSuggestion.zeroRef": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : xmlParseCharRef: invalid xmlChar value 0\n<fragment>a &#0; b</fragment>"
+      },
+      "setDefaultSuggestion.cdataEnd": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Sequence ']]>' not allowed in content\n<fragment>a ]]> b</fragment>"
+      },
+      "setDefaultSuggestion.control": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : PCDATA invalid Char value 1\n<fragment>a \u0001 b</fragment>"
+      },
+      "setDefaultSuggestion.selfClosing": {
+        "ok": "<undefined>"
+      },
+      "setDefaultSuggestion.closeFirst": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: fragment line 1 and match\n<fragment></match> x</fragment>"
+      },
+      "setDefaultSuggestion.digitTag": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : StartTag: invalid element name\n<fragment><1x></fragment>"
+      },
+      "setDefaultSuggestion.attrNoValue": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Specification mandates value for attribute b\n<fragment>a <match b>x</match></fragment>"
+      },
+      "setDefaultSuggestion.attrTwice": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Attribute a redefined\n<fragment><match a=\"1\" a=\"2\">x</match></fragment>"
+      },
+      "setDefaultSuggestion.openComment": {
+        "error": "Invalid XML: unbalanced elements: Entity: line 1: parser error : Comment not terminated\n<fragment>a <!-- c</fragment>"
+      },
+      "setDefaultSuggestion.openCdata": {
+        "error": "Invalid XML: unbalanced elements: Entity: line 1: parser error : CData section not finished\nx</fragmen\n<fragment>a <![CDATA[x</fragment>"
+      },
+      "setDefaultSuggestion.pi": {
+        "ok": "<undefined>"
+      },
+      "setDefaultSuggestion.twoAmps": {
+        "error": "Invalid XML: unbalanced elements: Entity: line 1: parser error : xmlParseEntityRef: no name\n<fragment>a & b & c</fragment>"
+      },
+      "setDefaultSuggestion.twoEntities": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Entity 'foo' not defined\n<fragment>&foo; &bar;</fragment>"
+      },
+      "setDefaultSuggestion.ampThenMismatch": {
+        "error": "Invalid XML: unbalanced elements: Entity: line 1: parser error : xmlParseEntityRef: no name\n<fragment>a & b </dim></fragment>"
+      },
+      "setDefaultSuggestion.endNoGt": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : expected '>'\n<fragment><match>x</match</fragment>"
+      },
+      "setDefaultSuggestion.longEntity": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Entity 'foo' not defined\nxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx&foo;"
+      },
+      "setDefaultSuggestion.tab": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: fragment line 1 and dim\n<fragment>a\t</dim></fragment>\n           \t"
+      },
+      "setDefaultSuggestion.unicode": {
+        "error": "Invalid XML: bad content: Entity: line 1: parser error : Opening and ending tag mismatch: match line 1 and fragment\n<fragment>é中 <match></fragment>"
+      },
+      "setDefaultSuggestion.missing": {
+        "error": "Error in invocation of omnibox.setDefaultSuggestion(omnibox.DefaultSuggestResult suggestion, optional function callback): Error at parameter 'suggestion': Missing required property 'description'."
+      },
+      "setDefaultSuggestion.content": {
+        "error": "Error in invocation of omnibox.setDefaultSuggestion(omnibox.DefaultSuggestResult suggestion, optional function callback): Error at parameter 'suggestion': Unexpected property: 'content'."
+      },
+      "setDefaultSuggestion.badType": {
+        "error": "Error in invocation of omnibox.setDefaultSuggestion(omnibox.DefaultSuggestResult suggestion, optional function callback): Error at parameter 'suggestion': Error at property 'description': Invalid type: expected string, found integer."
+      },
+      "sendSuggestions.returns": {
+        "ok": "undefined"
+      },
+      "sendSuggestions.badXml": {
+        "ok": "<undefined>"
+      },
+      "sendSuggestions.missingContent": {
+        "error": "Error in invocation of omnibox.sendSuggestions(integer requestId, array suggestResults): Error at parameter 'suggestResults': Error at index 0: Missing required property 'content'."
+      },
+      "sendSuggestions.badId": {
+        "error": "Error in invocation of omnibox.sendSuggestions(integer requestId, array suggestResults): No matching signature."
+      },
+      "setDefaultSuggestion.returns": {
+        "ok": "promise"
       }
     },
     "readingList": {
@@ -4822,6 +5514,140 @@
       },
       "removeEntry.missing": {
         "error": "URL not found."
+      },
+      "addEntry.file": {
+        "error": "URL is not supported."
+      },
+      "addEntry.javascript": {
+        "error": "URL is not supported."
+      },
+      "addEntry.notUrl": {
+        "error": "URL is not valid."
+      },
+      "addEntry.noTitle": {
+        "error": "Error in invocation of readingList.addEntry(readingList.AddEntryOptions entry, optional function callback): Error at parameter 'entry': Missing required property 'title'."
+      },
+      "addEntry.noRead": {
+        "error": "Error in invocation of readingList.addEntry(readingList.AddEntryOptions entry, optional function callback): Error at parameter 'entry': Missing required property 'hasBeenRead'."
+      },
+      "addEntry.badType": {
+        "error": "Error in invocation of readingList.addEntry(readingList.AddEntryOptions entry, optional function callback): Error at parameter 'entry': Error at property 'title': Invalid type: expected string, found integer."
+      },
+      "addEntry.read": {
+        "ok": "<undefined>"
+      },
+      "addEntry.read.events": [
+        {
+          "event": "added",
+          "hasBeenRead": false
+        },
+        {
+          "event": "updated",
+          "hasBeenRead": true
+        }
+      ],
+      "query.all": {
+        "ok": [
+          {
+            "shape": {
+              "creationTime": "number",
+              "hasBeenRead": "boolean",
+              "lastUpdateTime": "number",
+              "title": "string",
+              "url": "string"
+            },
+            "title": "Probe read 2",
+            "hasBeenRead": true,
+            "url": "/page?read2"
+          }
+        ]
+      },
+      "query.read": {
+        "ok": 1
+      },
+      "query.unread": {
+        "ok": 0
+      },
+      "query.title": {
+        "ok": 1
+      },
+      "query.titlePart": {
+        "ok": 0
+      },
+      "query.badUrl": {
+        "error": "URL is not valid."
+      },
+      "updateEntry.both": {
+        "ok": "<undefined>"
+      },
+      "onEntryUpdated.both": [
+        {
+          "shape": {
+            "creationTime": "number",
+            "hasBeenRead": "boolean",
+            "lastUpdateTime": "number",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe read 3",
+          "hasBeenRead": true
+        },
+        {
+          "shape": {
+            "creationTime": "number",
+            "hasBeenRead": "boolean",
+            "lastUpdateTime": "number",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe read 3",
+          "hasBeenRead": false
+        }
+      ],
+      "updateEntry.titleOnly": {
+        "ok": "<undefined>"
+      },
+      "onEntryUpdated.titleOnly": [
+        {
+          "shape": {
+            "creationTime": "number",
+            "hasBeenRead": "boolean",
+            "lastUpdateTime": "number",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe read 4",
+          "hasBeenRead": false
+        }
+      ],
+      "updateEntry.sameValues": {
+        "ok": "<undefined>"
+      },
+      "onEntryUpdated.sameValues": [],
+      "updateEntry.nothing": {
+        "error": "At least one of `title` or `hasBeenRead` must be provided."
+      },
+      "updateEntry.badUrl": {
+        "error": "URL is not supported."
+      },
+      "removeEntry.badUrl": {
+        "error": "URL is not valid."
+      },
+      "onEntryRemoved.shape": {
+        "event": {
+          "shape": {
+            "creationTime": "number",
+            "hasBeenRead": "boolean",
+            "lastUpdateTime": "number",
+            "title": "string",
+            "url": "string"
+          },
+          "title": "Probe read 4",
+          "hasBeenRead": false
+        }
+      },
+      "query.end": {
+        "ok": 0
       }
     },
     "tts": {

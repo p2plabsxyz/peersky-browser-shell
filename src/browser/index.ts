@@ -37,12 +37,12 @@ import { AlarmsAPI } from './api/alarms'
 import { DownloadsAPI } from './api/downloads'
 import { SidePanelAPI } from './api/side-panel'
 import { SystemAPI } from './api/system'
-import { BookmarksAPI } from './api/bookmarks'
+import { BookmarksAPI, BookmarkImportNode } from './api/bookmarks'
 import { HistoryAPI } from './api/history'
 import { TopSitesAPI } from './api/top-sites'
 import { ReadingListAPI } from './api/reading-list'
 import { SearchAPI } from './api/search'
-import { OmniboxAPI } from './api/omnibox'
+import { OmniboxAPI, OmniboxDisposition, OmniboxKeyword, OmniboxSuggestion } from './api/omnibox'
 import { SessionsAPI } from './api/sessions'
 import { TabGroupsAPI } from './api/tab-groups'
 import { BrowsingDataAPI } from './api/browsing-data'
@@ -55,6 +55,14 @@ import { TabCaptureAPI } from './api/tab-capture'
 import { DesktopCaptureAPI } from './api/desktop-capture'
 import { DeclarativeContentAPI } from './api/declarative-content'
 import { ExtensionPermissions } from './permissions'
+
+export type { BookmarkChange, BookmarkImportNode } from './api/bookmarks'
+export type {
+  OmniboxDescriptionStyle,
+  OmniboxDisposition,
+  OmniboxKeyword,
+  OmniboxSuggestion,
+} from './api/omnibox'
 
 function checkVersion() {
   const electronVersion = process.versions.electron
@@ -575,6 +583,93 @@ export class ElectronChromeExtensions extends EventEmitter {
    */
   getURLOverrides(): Record<string, string> {
     return this.ctx.store.urlOverrides
+  }
+
+  /**
+   * The bookmark tree chrome.bookmarks keeps for this session, as extensions
+   * see it. Each change an extension makes is emitted as 'bookmarks-changed'
+   * with a {@link BookmarkChange}, so a host with bookmarks of its own can
+   * follow them.
+   */
+  getBookmarkTree(): Promise<chrome.bookmarks.BookmarkTreeNode[]> {
+    return this.api.bookmarks.getTreeForHost()
+  }
+
+  /**
+   * Puts the host's own bookmarks in the Bookmarks bar, Other bookmarks and
+   * Mobile bookmarks folders, in place of what they held; a folder left out
+   * is kept. Extensions see it as an import (onImportBegan, onRemoved,
+   * onCreated, onImportEnded). Resolves with the new tree.
+   */
+  replaceBookmarks(folders: {
+    bookmarksBar?: BookmarkImportNode[]
+    other?: BookmarkImportNode[]
+    mobile?: BookmarkImportNode[]
+  }): Promise<chrome.bookmarks.BookmarkTreeNode[]> {
+    return this.api.bookmarks.replaceTree(folders)
+  }
+
+  /**
+   * Adds bookmarks to a folder (Other bookmarks unless `parentId` says
+   * otherwise), as an import. Resolves with the nodes added.
+   */
+  importBookmarks(
+    nodes: BookmarkImportNode[],
+    options?: { parentId?: string },
+  ): Promise<chrome.bookmarks.BookmarkTreeNode[]> {
+    return this.api.bookmarks.importNodes(nodes, options)
+  }
+
+  /**
+   * Deletes the visits chrome.history keeps, since `since` (milliseconds
+   * since the epoch), or all of them. Call it when the person clears their
+   * history in the host.
+   */
+  clearHistory(options: { since?: number } = {}): Promise<void> {
+    return this.api.history.clear(options.since)
+  }
+
+  /** The omnibox keywords of loaded extensions, for the host's address bar. */
+  getOmniboxKeywords(): OmniboxKeyword[] {
+    return this.api.omnibox.getKeywords()
+  }
+
+  /** The suggestion an extension set with omnibox.setDefaultSuggestion, if any. */
+  getOmniboxDefaultSuggestion(extensionId: string) {
+    return this.api.omnibox.getDefaultSuggestion(extensionId)
+  }
+
+  /** The person typed the extension's keyword: sends omnibox.onInputStarted. */
+  omniboxInputStarted(extensionId: string) {
+    this.api.omnibox.inputStarted(extensionId)
+  }
+
+  /**
+   * The text after the keyword changed: sends omnibox.onInputChanged and
+   * resolves with the suggestions the extension gives (empty when it gives
+   * none within `timeoutMs`, 5 seconds by default, or newer input came).
+   */
+  omniboxInputChanged(
+    extensionId: string,
+    text: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<OmniboxSuggestion[]> {
+    return this.api.omnibox.inputChanged(extensionId, text, options.timeoutMs)
+  }
+
+  /** The person pressed Enter or picked a suggestion: sends omnibox.onInputEntered. */
+  omniboxInputEntered(extensionId: string, text: string, disposition?: OmniboxDisposition) {
+    this.api.omnibox.inputEntered(extensionId, text, disposition)
+  }
+
+  /** The person left keyword mode: sends omnibox.onInputCancelled. */
+  omniboxInputCancelled(extensionId: string) {
+    this.api.omnibox.inputCancelled(extensionId)
+  }
+
+  /** The person deleted a deletable suggestion: sends omnibox.onDeleteSuggestion. */
+  omniboxDeleteSuggestion(extensionId: string, text: string) {
+    this.api.omnibox.deleteSuggestion(extensionId, text)
   }
 
   /**

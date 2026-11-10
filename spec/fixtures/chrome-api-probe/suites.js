@@ -710,7 +710,8 @@ suite('bookmarks', async (t, env) => {
     map: (id, info) => ({ same: id === created.id, shape: probe.shape(info), index: info.index }),
   })
   await t.call('getSubTree', () => chrome.bookmarks.getSubTree(folderNode.id), (r) => ({ children: r[0].children.length, shape: probe.shape(r[0]) }))
-  await t.call('update.url', () => chrome.bookmarks.update(created.id, { url: env.base + 'page?bm2' }), nodeView)
+  // The folder's id differs between runs: record that it is the folder.
+  await t.call('update.url', () => chrome.bookmarks.update(created.id, { url: env.base + 'page?bm2' }), (n) => Object.assign(nodeView(n), { parentId: n.parentId === folderNode.id ? '<folder>' : n.parentId }))
   await t.call('update.badUrl', () => chrome.bookmarks.update(created.id, { url: 'not a url' }))
   await t.call('create.badParent', () => chrome.bookmarks.create({ parentId: '987654', title: 'x' }))
   await t.call('create.inRoot', () => chrome.bookmarks.create({ parentId: '0', title: 'x' }))
@@ -720,6 +721,94 @@ suite('bookmarks', async (t, env) => {
     map: (id, info) => ({ shape: probe.shape(info), node: nodeView(info.node) }),
   })
   await t.call('get.removed', () => chrome.bookmarks.get(created.id))
+
+  // Edge cases and the errors Chrome gives for them.
+  await t.call('get.badId', () => chrome.bookmarks.get('abc'))
+  await t.call('get.emptyList', () => chrome.bookmarks.get([]), (r) => r.length)
+  await t.call('get.badType', () => chrome.bookmarks.get(5))
+  await t.call('get.mobileHidden', () => chrome.bookmarks.get('3'), (r) => r.map(nodeView))
+  await t.call('getChildren.root', () => chrome.bookmarks.getChildren('0'), (r) => r.map((n) => n.id))
+  await t.call('getChildren.missing', () => chrome.bookmarks.getChildren('987654'))
+  await t.call('getSubTree.missing', () => chrome.bookmarks.getSubTree('987654'))
+  await t.call('getRecent.zero', () => chrome.bookmarks.getRecent(0))
+  await t.call('remove.missing', () => chrome.bookmarks.remove('987654'))
+  await t.call('removeTree.permanent', () => chrome.bookmarks.removeTree('2'))
+  await t.call('removeTree.root', () => chrome.bookmarks.removeTree('0'))
+  await t.call('update.root', () => chrome.bookmarks.update('1', { title: 'x' }))
+  await t.call('update.missing', () => chrome.bookmarks.update('987654', { title: 'x' }))
+  await t.call('move.permanent', () => chrome.bookmarks.move('1', { parentId: '2' }))
+  await t.call('create.badUrl', () => chrome.bookmarks.create({ parentId: '2', title: 'x', url: 'not a url' }))
+  await t.call('create.badType', () => chrome.bookmarks.create({ parentId: 2 }))
+  await t.call('create.badIndexType', () => chrome.bookmarks.create({ parentId: '2', index: 'x' }))
+  const outOfRange = await t.call('create.badIndex', () => chrome.bookmarks.create({ parentId: '2', title: 'Probe index', index: 999 }), nodeView)
+  if (outOfRange) await chrome.bookmarks.remove(outOfRange.id)
+  const negative = await t.call('create.negativeIndex', () => chrome.bookmarks.create({ parentId: '2', title: 'x', index: -1 }), nodeView)
+  if (negative) await chrome.bookmarks.removeTree((await chrome.bookmarks.search({ title: 'x' }))[0].id)
+  const plain = await t.call('create.noParent', () => chrome.bookmarks.create({ title: 'Probe default', url: env.base + 'page?bm3' }), nodeView)
+  const untitled = await t.call('create.noTitle', () => chrome.bookmarks.create({ parentId: '2' }), nodeView)
+  if (untitled) await chrome.bookmarks.remove(untitled.id)
+  if (plain) {
+    await t.call('create.urlParent', () => chrome.bookmarks.create({ parentId: plain.id, title: 'x' }))
+    await t.call('getChildren.url', () => chrome.bookmarks.getChildren(plain.id), (r) => r.length)
+    await t.call('getSubTree.url', () => chrome.bookmarks.getSubTree(plain.id), (r) => r.map((n) => probe.shape(n)))
+    await t.call('move.urlParent', () => chrome.bookmarks.move(plain.id, { parentId: plain.id }))
+    await t.event('onChanged.urlOnly', chrome.bookmarks.onChanged, () => chrome.bookmarks.update(plain.id, { url: env.base + 'page?bm4' }), {
+      map: (id, info) => ({ info: probe.shape(info), url: info.url && info.url.replace(env.base, '/') }),
+    })
+    await t.event('onRemoved.url', chrome.bookmarks.onRemoved, () => chrome.bookmarks.remove(plain.id), {
+      map: (id, info) => ({ shape: probe.shape(info), node: nodeView(info.node), parentId: info.parentId }),
+    })
+  }
+  const outer = await chrome.bookmarks.create({ parentId: '2', title: 'Probe outer' })
+  const inner = await chrome.bookmarks.create({ parentId: outer.id, title: 'Probe inner' })
+  const leaf = await chrome.bookmarks.create({ parentId: outer.id, title: 'Probe leaf', url: env.base + 'page?leaf' })
+  await t.call('getChildren.order', () => chrome.bookmarks.getChildren(outer.id), (r) => r.map((n) => ({ title: n.title, index: n.index })))
+  await t.call('move.intoDescendant', () => chrome.bookmarks.move(outer.id, { parentId: inner.id }))
+  await t.call('move.intoSelf', () => chrome.bookmarks.move(outer.id, { parentId: outer.id }))
+  await t.call('move.toRoot', () => chrome.bookmarks.move(inner.id, { parentId: '0' }))
+  await t.call('move.missingParent', () => chrome.bookmarks.move(inner.id, { parentId: '987654' }))
+  await t.call('move.badIndex', () => chrome.bookmarks.move(leaf.id, { parentId: outer.id, index: 999 }), (n) => ({ index: n.index }))
+  await t.event('onMoved.sameParent', chrome.bookmarks.onMoved, () => chrome.bookmarks.move(leaf.id, { index: 0 }), {
+    map: (id, info) => ({ index: info.index, oldIndex: info.oldIndex, same: info.parentId === info.oldParentId }),
+  })
+  await t.call('getChildren.afterMove', () => chrome.bookmarks.getChildren(outer.id), (r) => r.map((n) => ({ title: n.title, index: n.index })))
+  await t.call('update.folderUrl', () => chrome.bookmarks.update(outer.id, { url: env.base }))
+  await t.call('update.empty', () => chrome.bookmarks.update(leaf.id, {}), (n) => Object.assign(nodeView(n), { parentId: n.parentId === outer.id ? '<outer>' : n.parentId }))
+  await t.event('onChanged.folder', chrome.bookmarks.onChanged, () => chrome.bookmarks.update(outer.id, { title: 'Probe outer 2' }), {
+    map: (id, info) => ({ info: probe.shape(info), title: info.title }),
+  })
+  await t.call('search.query', () => chrome.bookmarks.search({ query: 'probe outer' }), (r) => r.map((n) => n.title))
+  await t.call('search.words', () => chrome.bookmarks.search('outer probe'), (r) => r.map((n) => n.title))
+  await t.call('search.prefix', () => chrome.bookmarks.search('prob lea'), (r) => r.map((n) => n.title))
+  await t.call('search.inUrl', () => chrome.bookmarks.search('leaf'), (r) => r.map((n) => n.title))
+  await t.call('search.caseless', () => chrome.bookmarks.search('PROBE LEAF'), (r) => r.map((n) => n.title))
+  await t.call('search.empty', () => chrome.bookmarks.search(''), (r) => r.length)
+  await t.call('search.emptyObject', () => chrome.bookmarks.search({}), (r) => r.length)
+  await t.call('search.badUrl', () => chrome.bookmarks.search({ url: 'not a url' }), (r) => r.length)
+  await t.call('search.title', () => chrome.bookmarks.search({ title: 'Probe outer 2' }), (r) => r.map((n) => n.title))
+  await t.call('search.titlePart', () => chrome.bookmarks.search({ title: 'Probe outer' }), (r) => r.length)
+  await t.call('search.queryAndTitle', () => chrome.bookmarks.search({ query: 'probe', title: 'Probe leaf' }), (r) => r.map((n) => n.title))
+  await t.call('getRecent.folders', () => chrome.bookmarks.getRecent(5), (r) => r.map((n) => n.title))
+  await t.call('getSubTree.nested', () => chrome.bookmarks.getSubTree(outer.id), (r) => r[0].children.map((c) => ({ title: c.title, shape: probe.shape(c) })))
+  await t.call('remove.folderWithChildren', () => chrome.bookmarks.remove(outer.id))
+  await t.event('onRemoved.tree', chrome.bookmarks.onRemoved, () => chrome.bookmarks.removeTree(outer.id), {
+    map: (id, info) => info.node.children.map((c) => ({ title: c.title, shape: probe.shape(c) })),
+  })
+  await t.call('get.innerGone', () => chrome.bookmarks.get(inner.id))
+  // Mobile bookmarks is listed once it holds something, as in Chrome.
+  const mobile = await t.call('create.mobile', () => chrome.bookmarks.create({ parentId: '3', title: 'Probe mobile', url: env.base + 'page?m' }), nodeView)
+  await t.call('getTree.withMobile', () => chrome.bookmarks.getTree(), (tree) => tree[0].children.map((c) => ({ id: c.id, title: c.title, folderType: c.folderType, index: c.index })))
+  if (mobile) await chrome.bookmarks.remove(mobile.id)
+  await t.call('getTree.afterMobile', () => chrome.bookmarks.getTree(), (tree) => tree[0].children.length)
+  const js = await t.call('create.javascriptUrl', () => chrome.bookmarks.create({ parentId: '2', title: 'Probe js', url: 'javascript:void(0)' }), nodeView)
+  if (js) await chrome.bookmarks.remove(js.id)
+  const internal = await t.call('create.chromeUrl', () => chrome.bookmarks.create({ parentId: '2', title: 'Probe settings', url: 'chrome://settings/' }), nodeView)
+  if (internal) await chrome.bookmarks.remove(internal.id)
+  const relative = await t.call('create.relativeUrl', () => chrome.bookmarks.create({ parentId: '2', title: 'Probe relative', url: '/page' }), nodeView)
+  if (relative) await chrome.bookmarks.remove((await chrome.bookmarks.search({ title: 'Probe relative' }))[0].id)
+  await t.call('get.bar', () => chrome.bookmarks.get('1'), (r) => r.map((n) => ({ shape: probe.shape(n), title: n.title, folderType: n.folderType })))
+  await t.call('get.other', () => chrome.bookmarks.get('2'), (r) => r.map((n) => probe.shape(n)))
+  await t.call('getTree.end', () => chrome.bookmarks.getTree(), (tree) => tree[0].children.map((c) => c.children.length))
 })
 
 // ---------------------------------------------------------------- history
@@ -741,10 +830,52 @@ suite('history', async (t, env) => {
   await t.call('deleteRange', () => chrome.history.deleteRange({ startTime: 0, endTime: Date.now() }))
   await t.call('search.afterDelete', () => chrome.history.search({ text: '', startTime: 0 }), (r) => r.filter((x) => x.url.startsWith(env.base)).length)
   await t.call('addUrl.bad', () => chrome.history.addUrl({ url: 'not a url' }))
+
+  // Edge cases and the errors Chrome gives for them.
+  const second = env.base + 'page?history2'
+  await t.call('addUrl.noUrl', () => chrome.history.addUrl({}))
+  await t.call('addUrl.badType', () => chrome.history.addUrl({ url: 5 }))
+  await t.call('search.noText', () => chrome.history.search({}))
+  await t.call('search.maxNegative', () => chrome.history.search({ text: '', maxResults: -1 }))
+  await t.call('search.badTime', () => chrome.history.search({ text: '', startTime: 'x' }))
+  await t.call('getVisits.bad', () => chrome.history.getVisits({ url: 'not a url' }))
+  await t.call('getVisits.unknown', () => chrome.history.getVisits({ url: env.base + 'never' }), (r) => r.length)
+  await t.call('deleteUrl.bad', () => chrome.history.deleteUrl({ url: 'not a url' }))
+  await t.call('deleteUrl.unknown', () => chrome.history.deleteUrl({ url: env.base + 'never' }))
+  await t.call('deleteRange.noEnd', () => chrome.history.deleteRange({ startTime: 0 }))
+  await t.call('addUrl.chrome', () => chrome.history.addUrl({ url: 'chrome://version/' }))
+  await t.call('addUrl.data', () => chrome.history.addUrl({ url: 'data:text/plain,probe' }))
+  await t.call('addUrl.about', () => chrome.history.addUrl({ url: 'about:blank' }))
+  await t.call('search.schemes', () => chrome.history.search({ text: '', startTime: 0 }), (r) => r.map((x) => x.url.split(':')[0]).sort())
+  await t.event('onVisited.addUrl', chrome.history.onVisited, () => chrome.history.addUrl({ url: second }), {
+    filter: (item) => item.url === second,
+    map: (item) => ({ shape: probe.shape(item), visitCount: item.visitCount, typedCount: item.typedCount, title: item.title }),
+  })
+  await chrome.history.addUrl({ url: second })
+  await t.call('search.twice', () => chrome.history.search({ text: 'history2', startTime: 0 }), (r) => r.map((x) => ({ visitCount: x.visitCount, typedCount: x.typedCount })))
+  await t.call('getVisits.twice', () => chrome.history.getVisits({ url: second }), (r) => r.map((v) => ({ transition: v.transition, referringVisitId: v.referringVisitId })))
+  await t.call('search.future', () => chrome.history.search({ text: '', startTime: Date.now() + 60000 }), (r) => r.length)
+  await t.call('search.endTime', () => chrome.history.search({ text: '', startTime: 0, endTime: 1 }), (r) => r.length)
+  await t.call('search.default24h', () => chrome.history.search({ text: 'history2' }), (r) => r.length)
+  const tab = await openTab(env.base + 'page?titled')
+  await probe.sleep(300)
+  await t.call('search.title', () => chrome.history.search({ text: 'titled', startTime: 0 }), (r) => r.map((x) => ({ title: x.title, visitCount: x.visitCount, typedCount: x.typedCount })))
+  await t.call('search.byTitle', () => chrome.history.search({ text: 'Probe page', startTime: 0 }), (r) => r.length > 0)
+  await t.call('getVisits.link', () => chrome.history.getVisits({ url: env.base + 'page?titled' }), (r) => r.map((v) => v.transition))
+  await t.call('search.noFrames', () => chrome.history.search({ text: 'frame', startTime: 0 }), (r) => r.length)
+  await closeTabs([tab.id])
+  await t.event('onVisitRemoved.all', chrome.history.onVisitRemoved, () => chrome.history.deleteAll(), {
+    map: (info) => ({ shape: probe.shape(info), allHistory: info.allHistory, urls: info.urls }),
+  })
+  await t.call('search.afterDeleteAll', () => chrome.history.search({ text: '', startTime: 0 }), (r) => r.length)
 })
 
 // ---------------------------------------------------------------- topSites
-suite('topSites', async (t) => {
+suite('topSites', async (t, env) => {
+  // A visit first, so the list has a site whatever ran before: Chrome lists
+  // its own suggestions in a new profile, the shell lists sites from history.
+  const tab = await openTab(env.base + 'page?top')
+  await closeTabs([tab.id])
   await t.call('get', () => chrome.topSites.get(), (r) => ({ isArray: Array.isArray(r), shape: r.length ? probe.shape(r[0]) : 'empty' }))
 })
 
@@ -921,11 +1052,67 @@ suite('search', async (t) => {
   if (searchTab) await closeTabs([searchTab.id])
   await t.call('query.badDisposition', () => chrome.search.query({ text: 'x', disposition: 'SIDEWAYS' }))
   await t.call('query.empty', () => chrome.search.query({ text: '' }))
+  await t.call('query.noText', () => chrome.search.query({}))
+  await t.call('query.badText', () => chrome.search.query({ text: 5 }))
+  await t.call('query.tabAndDisposition', () => chrome.search.query({ text: 'x', tabId: 1, disposition: 'NEW_TAB' }))
+  await t.call('query.missingTab', () => chrome.search.query({ text: 'x', tabId: 987654 }))
+  await t.call('query.badTab', () => chrome.search.query({ text: 'x', tabId: 'one' }))
 })
 
 suite('omnibox', async (t) => {
   await t.call('setDefaultSuggestion', () => chrome.omnibox.setDefaultSuggestion({ description: 'Run <match>probe</match>' }))
   await t.call('setDefaultSuggestion.badXml', () => chrome.omnibox.setDefaultSuggestion({ description: 'Run <match>probe' }))
+  const xml = {
+    styles: '<url>u</url> <dim>d</dim> &amp; &lt; &gt; &quot; &apos; &#65; &#x42;',
+    nested: '<match><dim>x</dim></match>',
+    unknownTag: '<b>bold</b> <match a="1">x</match>',
+    badEntity: 'a &foo; b',
+    bareAmp: 'a & b',
+    bareLt: 'a < b',
+    strayClose: 'a </dim> b',
+    unclosedTwo: '<match><dim>x',
+    badAttr: '<match a=1>x</match>',
+    long: 'x'.repeat(100) + ' <match>',
+    longBefore: 'y'.repeat(30) + '</dim>' + 'z'.repeat(70),
+    multiline: 'line one\n<match>two',
+    cdata: '<![CDATA[a<b]]>',
+    comment: 'a <!-- c --> b',
+    empty: '',
+    noSemicolon: 'a &amp b',
+    badHexRef: 'a &#xZZ; b',
+    zeroRef: 'a &#0; b',
+    cdataEnd: 'a ]]> b',
+    control: 'a \u0001 b',
+    selfClosing: '<match/> x',
+    closeFirst: '</match> x',
+    digitTag: '<1x>',
+    attrNoValue: 'a <match b>x</match>',
+    attrTwice: '<match a="1" a="2">x</match>',
+    openComment: 'a <!-- c',
+    openCdata: 'a <![CDATA[x',
+    pi: 'a <?pi x?> b',
+    twoAmps: 'a & b & c',
+    twoEntities: '&foo; &bar;',
+    ampThenMismatch: 'a & b </dim>',
+    endNoGt: '<match>x</match',
+    longEntity: 'x'.repeat(100) + '&foo;',
+    tab: 'a\t</dim>',
+    unicode: '\u00e9\u4e2d <match>',
+  }
+  for (const [name, description] of Object.entries(xml)) {
+    await t.call('setDefaultSuggestion.' + name, () => chrome.omnibox.setDefaultSuggestion({ description }))
+  }
+  await t.call('setDefaultSuggestion.missing', () => chrome.omnibox.setDefaultSuggestion({}))
+  await t.call('setDefaultSuggestion.content', () => chrome.omnibox.setDefaultSuggestion({ description: 'x', content: 'y' }))
+  await t.call('setDefaultSuggestion.badType', () => chrome.omnibox.setDefaultSuggestion({ description: 5 }))
+  await t.call('sendSuggestions.returns', () => typeof chrome.omnibox.sendSuggestions(123456, [{ content: 'a', description: 'b' }]))
+  await t.call('sendSuggestions.badXml', () => chrome.omnibox.sendSuggestions(123456, [{ content: 'a', description: 'b <match>' }]))
+  await t.call('sendSuggestions.missingContent', () => chrome.omnibox.sendSuggestions(123456, [{ description: 'b' }]))
+  await t.call('sendSuggestions.badId', () => chrome.omnibox.sendSuggestions('x', []))
+  await t.call('setDefaultSuggestion.returns', () => {
+    const r = chrome.omnibox.setDefaultSuggestion({ description: 'Run <match>probe</match>' })
+    return r && typeof r.then === 'function' ? 'promise' : typeof r
+  })
 })
 
 suite('readingList', async (t, env) => {
@@ -938,6 +1125,58 @@ suite('readingList', async (t, env) => {
   await t.call('updateEntry.missing', () => chrome.readingList.updateEntry({ url: env.base + 'nope', hasBeenRead: true }))
   await t.event('onEntryRemoved', chrome.readingList.onEntryRemoved, () => chrome.readingList.removeEntry({ url }), { map: (e) => e.title })
   await t.call('removeEntry.missing', () => chrome.readingList.removeEntry({ url }))
+
+  // Edge cases and the errors Chrome gives for them.
+  const other = env.base + 'page?read2'
+  await t.call('addEntry.file', () => chrome.readingList.addEntry({ title: 'f', url: 'file:///tmp/probe', hasBeenRead: false }))
+  await t.call('addEntry.javascript', () => chrome.readingList.addEntry({ title: 'j', url: 'javascript:void(0)', hasBeenRead: false }))
+  await t.call('addEntry.notUrl', () => chrome.readingList.addEntry({ title: 'n', url: 'not a url', hasBeenRead: false }))
+  await t.call('addEntry.noTitle', () => chrome.readingList.addEntry({ url: other, hasBeenRead: false }))
+  await t.call('addEntry.noRead', () => chrome.readingList.addEntry({ title: 'r', url: other }))
+  await t.call('addEntry.badType', () => chrome.readingList.addEntry({ title: 5, url: other, hasBeenRead: false }))
+  const seen = []
+  let watching = true
+  const onUpdated = (e) => watching && seen.push({ shape: probe.shape(e), title: e.title, hasBeenRead: e.hasBeenRead })
+  // What an entry added as read sends, with the listeners added first and
+  // time for every event to arrive before the next test listens.
+  // The flag, not removeListener, ends the recording: this tests the events.
+  const addEvents = []
+  let adding = true
+  const onAdd = (e) => adding && addEvents.push({ event: 'added', hasBeenRead: e.hasBeenRead })
+  const onAddUpdate = (e) => adding && addEvents.push({ event: 'updated', hasBeenRead: e.hasBeenRead })
+  chrome.readingList.onEntryAdded.addListener(onAdd)
+  chrome.readingList.onEntryUpdated.addListener(onAddUpdate)
+  await t.call('addEntry.read', () => chrome.readingList.addEntry({ title: 'Probe read 2', url: other, hasBeenRead: true }))
+  await probe.sleep(500)
+  adding = false
+  chrome.readingList.onEntryAdded.removeListener(onAdd)
+  chrome.readingList.onEntryUpdated.removeListener(onAddUpdate)
+  t.set('addEntry.read.events', addEvents)
+  await t.call('query.all', () => chrome.readingList.query({}), (r) => r.filter((e) => e.url.startsWith(env.base)).map((e) => ({ shape: probe.shape(e), title: e.title, hasBeenRead: e.hasBeenRead, url: e.url.replace(env.base, '/') })))
+  await t.call('query.read', () => chrome.readingList.query({ hasBeenRead: true }), (r) => r.filter((e) => e.url.startsWith(env.base)).length)
+  await t.call('query.unread', () => chrome.readingList.query({ hasBeenRead: false }), (r) => r.filter((e) => e.url.startsWith(env.base)).length)
+  await t.call('query.title', () => chrome.readingList.query({ title: 'Probe read 2' }), (r) => r.length)
+  await t.call('query.titlePart', () => chrome.readingList.query({ title: 'Probe' }), (r) => r.length)
+  await t.call('query.badUrl', () => chrome.readingList.query({ url: 'not a url' }), (r) => r.length)
+  chrome.readingList.onEntryUpdated.addListener(onUpdated)
+  await t.call('updateEntry.both', () => chrome.readingList.updateEntry({ url: other, title: 'Probe read 3', hasBeenRead: false }))
+  await probe.sleep(500)
+  t.set('onEntryUpdated.both', seen.splice(0))
+  await t.call('updateEntry.titleOnly', () => chrome.readingList.updateEntry({ url: other, title: 'Probe read 4' }))
+  await probe.sleep(300)
+  t.set('onEntryUpdated.titleOnly', seen.splice(0))
+  await t.call('updateEntry.sameValues', () => chrome.readingList.updateEntry({ url: other, title: 'Probe read 4', hasBeenRead: false }))
+  await probe.sleep(300)
+  t.set('onEntryUpdated.sameValues', seen.splice(0))
+  watching = false
+  chrome.readingList.onEntryUpdated.removeListener(onUpdated)
+  await t.call('updateEntry.nothing', () => chrome.readingList.updateEntry({ url: other }))
+  await t.call('updateEntry.badUrl', () => chrome.readingList.updateEntry({ url: 'chrome://settings', hasBeenRead: true }))
+  await t.call('removeEntry.badUrl', () => chrome.readingList.removeEntry({ url: 'not a url' }))
+  await t.event('onEntryRemoved.shape', chrome.readingList.onEntryRemoved, () => chrome.readingList.removeEntry({ url: other }), {
+    map: (e) => ({ shape: probe.shape(e), title: e.title, hasBeenRead: e.hasBeenRead }),
+  })
+  await t.call('query.end', () => chrome.readingList.query({}), (r) => r.filter((e) => e.url.startsWith(env.base)).length)
 })
 
 // ---------------------------------------------------------------- tts

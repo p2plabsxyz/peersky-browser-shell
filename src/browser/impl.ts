@@ -39,4 +39,12 @@ export interface ChromeExtensionImpl {
     tabId?: number
     windowId?: number
   }): Promise<void> | void
+
+  /**
+   * The results page of the host's search engine for `text`, for
+   * chrome.search.query. The library opens it in the tab or window the
+   * extension asked for. Without this hook, or when it returns nothing, it
+   * searches with DuckDuckGo.
+   */
+  getSearchUrl?(text: string): Promise<string | undefined> | string | undefined
 }

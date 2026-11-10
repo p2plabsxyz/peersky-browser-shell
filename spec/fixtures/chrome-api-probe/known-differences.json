@@ -69,18 +69,6 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (40 differences)."
     },
     {
-      "path": "probe.bookmarks.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (129 differences)."
-    },
-    {
-      "path": "probe.history.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (44 differences)."
-    },
-    {
-      "path": "probe.topSites.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
-    },
-    {
       "path": "probe.sessions.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (27 differences)."
     },
@@ -107,18 +95,6 @@
     {
       "path": "probe.proxy.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
-    },
-    {
-      "path": "probe.search.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (4 differences)."
-    },
-    {
-      "path": "probe.omnibox.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
-    },
-    {
-      "path": "probe.readingList.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (19 differences)."
     },
     {
       "path": "probe.tts.*",

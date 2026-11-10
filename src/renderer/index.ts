@@ -787,6 +787,106 @@ export const injectExtensionAPIs = () => {
         },
       },
 
+      omnibox: {
+        manifestKey: 'omnibox',
+        factory: (base: any) => {
+          // sendSuggestions returns nothing in Chrome, so a bad argument has
+          // to throw here, at once, with the message Chrome's bindings give.
+          const invocation = 'Error in invocation of omnibox.sendSuggestions(integer requestId, array suggestResults): '
+          const isInt32 = (v: any) => typeof v === 'number' && Number.isInteger(v) && v >= -2147483648 && v <= 2147483647
+          const typeOf = (v: any) =>
+            v === null
+              ? 'null'
+              : Array.isArray(v)
+                ? 'array'
+                : isInt32(v)
+                  ? 'integer'
+                  : typeof v
+          const fields: Record<string, string> = {
+            content: 'string',
+            description: 'string',
+            deletable: 'boolean',
+            descriptionStyles: 'array',
+            actions: 'array',
+          }
+          const checkSuggestion = (r: any): string | undefined => {
+            if (!r || typeof r !== 'object' || Array.isArray(r)) {
+              return `Invalid type: expected omnibox.SuggestResult, found ${typeOf(r)}.`
+            }
+            const seen = new Set<string>()
+            for (const key of Object.keys(r)) {
+              const want = fields[key]
+              if (!want) return `Unexpected property: '${key}'.`
+              seen.add(key)
+              const v = r[key]
+              if (v === null || v === undefined) {
+                if (key === 'content' || key === 'description') return `Missing required property '${key}'.`
+                continue
+              }
+              const got = typeOf(v) === 'integer' ? 'number' : typeOf(v)
+              if (got !== want) return `Error at property '${key}': Invalid type: expected ${want}, found ${typeOf(v)}.`
+            }
+            for (const key of ['content', 'description']) {
+              if (!seen.has(key)) return `Missing required property '${key}'.`
+            }
+            return undefined
+          }
+          const sendSuggestions = (...args: any[]) => {
+            const [requestId, results] = args
+            if (
+              args.slice(2).some((a) => a !== undefined) ||
+              !(isInt32(requestId) || Object.is(requestId, -0)) ||
+              !Array.isArray(results)
+            ) {
+              throw new Error(invocation + 'No matching signature.')
+            }
+            results.forEach((r: any, i: number) => {
+              const error = checkSuggestion(r)
+              if (error) throw new Error(invocation + `Error at parameter 'suggestResults': Error at index ${i}: ${error}`)
+            })
+            electron
+              .invokeExtension(extensionId, 'omnibox.sendSuggestions', {}, requestId, results)
+              .catch((e: any) => console.error(`Unchecked runtime.lastError: ${e?.message ?? e}`))
+          }
+          // Listeners get (text, suggest), as in Chrome; the main process
+          // sends (text, requestId), and suggest answers that request.
+          const inputChanged = new ExtensionEvent<any>('omnibox.onInputChanged')
+          const wrappers = new Map<Function, Function>()
+          const onInputChanged = {
+            addListener(callback: Function) {
+              if (typeof callback !== 'function' || wrappers.has(callback)) return
+              const wrapper = (text: string, requestId: number) =>
+                callback(text, (suggestions: any) => sendSuggestions(requestId, suggestions))
+              wrappers.set(callback, wrapper)
+              inputChanged.addListener(wrapper)
+            },
+            removeListener(callback: Function) {
+              const wrapper = wrappers.get(callback)
+              if (!wrapper) return
+              wrappers.delete(callback)
+              inputChanged.removeListener(wrapper)
+            },
+            hasListener(callback: Function) {
+              return wrappers.has(callback)
+            },
+            hasListeners() {
+              return wrappers.size > 0
+            },
+          }
+          return {
+            ...base,
+            setDefaultSuggestion: invokeExtension('omnibox.setDefaultSuggestion'),
+            sendSuggestions,
+            onInputStarted: new ExtensionEvent('omnibox.onInputStarted'),
+            onInputChanged,
+            onInputEntered: new ExtensionEvent('omnibox.onInputEntered'),
+            onInputCancelled: new ExtensionEvent('omnibox.onInputCancelled'),
+            onDeleteSuggestion: new ExtensionEvent('omnibox.onDeleteSuggestion'),
+            onActionExecuted: new ExtensionEvent('omnibox.onActionExecuted'),
+          }
+        },
+      },
+
       permissions: {
         factory: (base) => {
           return {
@@ -1078,7 +1178,7 @@ export const injectExtensionAPIs = () => {
         permission: 'topSites',
         factory: () => {
           return {
-            get: invokeExtension('topSites.get', { noop: true, defaultResponse: [] }),
+            get: invokeExtension('topSites.get'),
           }
         },
       },
