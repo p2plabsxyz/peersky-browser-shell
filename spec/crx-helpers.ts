@@ -91,8 +91,14 @@ export const waitForBackgroundPage = async (
   if (!isBackgroundHostSupported(extension)) return
 
   return await new Promise<Electron.WebContents>((resolve) => {
+    // Every listener added while waiting is taken off again, so waiting many
+    // times in one run does not pile them up on long-lived pages.
+    const watched: Array<[Electron.WebContents, () => void]> = []
     const resolveHost = (wc: Electron.WebContents) => {
       app.removeListener('web-contents-created', onWebContentsCreated)
+      for (const [host, listener] of watched) {
+        if (!host.isDestroyed()) host.removeListener('did-frame-navigate', listener)
+      }
       resolve(wc)
     }
 
@@ -107,11 +113,13 @@ export const waitForBackgroundPage = async (
         return
       }
 
-      wc.once('did-frame-navigate', () => {
+      const listener = () => {
         if (hostPredicate(wc)) {
           resolveHost(wc)
         }
-      })
+      }
+      watched.push([wc, listener])
+      wc.on('did-frame-navigate', listener)
     }
 
     const onWebContentsCreated = (_event: any, wc: Electron.WebContents) => observeWebContents(wc)

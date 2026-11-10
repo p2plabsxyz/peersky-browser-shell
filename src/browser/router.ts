@@ -490,23 +490,39 @@ export class ExtensionRouter {
       return null
     }
 
-    try {
-      const serviceWorker = await this.session.serviceWorkers.startWorkerForScope(
-        `chrome-extension://${extensionId}/`,
-      )
-      const recovered = this.swStartFailures.get(extensionId)
-      if (recovered) {
-        this.swStartFailures.delete(extensionId)
-        console.log(
-          `[electron-chrome-extensions] service worker for ${extensionId} started; ` +
-            `${recovered.suppressed} event(s) were dropped while it was down`,
+    // A worker that has added listeners exists; right after an extension
+    // loads it may still be installing, and starting it fails until it is
+    // active. Keep trying for a few seconds then, rather than dropping events.
+    const attempts = this.hasWorkerListener(extensionId) ? 25 : 1
+    let lastError: unknown
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        const serviceWorker = await this.session.serviceWorkers.startWorkerForScope(
+          `chrome-extension://${extensionId}/`,
         )
+        const recovered = this.swStartFailures.get(extensionId)
+        if (recovered) {
+          this.swStartFailures.delete(extensionId)
+          console.log(
+            `[electron-chrome-extensions] service worker for ${extensionId} started; ` +
+              `${recovered.suppressed} event(s) were dropped while it was down`,
+          )
+        }
+        return serviceWorker
+      } catch (error) {
+        lastError = error
+        if (attempt + 1 < attempts) await new Promise((resolve) => setTimeout(resolve, 200))
       }
-      return serviceWorker
-    } catch (error) {
-      this.reportWorkerStartFailure(extensionId, eventName, error)
-      return null
     }
+    this.reportWorkerStartFailure(extensionId, eventName, lastError)
+    return null
+  }
+
+  private hasWorkerListener(extensionId: string) {
+    for (const list of this.listeners.values()) {
+      if (list.some((l) => l.type === 'service-worker' && l.extensionId === extensionId)) return true
+    }
+    return false
   }
 
   /**

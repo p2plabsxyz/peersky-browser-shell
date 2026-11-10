@@ -191,19 +191,38 @@ export const injectExtensionAPIs = () => {
       return canvas.toDataURL()
     }
 
+    // Each listener gets an id here, in the page's world, so the preload can
+    // find it again on removeListener: the function itself reaches the
+    // preload as a different proxy on every call.
+    let nextListenerId = 1
+    const listenerIds = new WeakMap<Function, number>()
+    const listenerIdFor = (callback: Function) => {
+      let id = listenerIds.get(callback)
+      if (!id) {
+        id = nextListenerId++
+        listenerIds.set(callback, id)
+      }
+      return id
+    }
+
     class ExtensionEvent<T extends Function> implements chrome.events.Event<T> {
       private listeners = new Set<T>()
 
       constructor(private name: string) {}
 
       addListener(callback: T) {
+        if (typeof callback !== 'function') {
+          throw new TypeError(
+            `Error in invocation of ${this.name}.addListener(function callback): No matching signature.`,
+          )
+        }
         if (this.listeners.has(callback)) return
         this.listeners.add(callback)
-        electron.addExtensionListener(extensionId, this.name, callback)
+        electron.addExtensionListener(extensionId, this.name, callback, listenerIdFor(callback))
       }
       removeListener(callback: T) {
         if (!this.listeners.delete(callback)) return
-        electron.removeExtensionListener(extensionId, this.name, callback)
+        electron.removeExtensionListener(extensionId, this.name, listenerIdFor(callback))
       }
 
       getRules(callback: (rules: chrome.events.Rule[]) => void): void

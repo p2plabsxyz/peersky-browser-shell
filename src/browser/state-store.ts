@@ -105,10 +105,38 @@ export class ExtensionStateStore {
     this.dirty = true
   }
 
+  private flushing?: Promise<void>
+
+  /**
+   * Writes the state if it changed. One write at a time, each to a new file
+   * moved over the old one, so a crash mid-write leaves the last good file.
+   * A change made while a write is under way is written by the next flush.
+   */
   async flush() {
+    while (this.flushing) await this.flushing.catch(() => {})
     if (!this.dirty || !this.filePath) return
-    await fs.mkdir(path.dirname(this.filePath), { recursive: true })
-    await fs.writeFile(this.filePath, JSON.stringify(this.state, null, 2), 'utf8')
+    const filePath = this.filePath
     this.dirty = false
+    const data = JSON.stringify(this.state, null, 2)
+    const write = (async () => {
+      await fs.mkdir(path.dirname(filePath), { recursive: true })
+      const temp = `${filePath}.${process.pid}.${Date.now()}.tmp`
+      try {
+        await fs.writeFile(temp, data, { encoding: 'utf8', mode: 0o600 })
+        await fs.rename(temp, filePath)
+      } catch (error) {
+        await fs.rm(temp, { force: true }).catch(() => {})
+        throw error
+      }
+    })()
+    this.flushing = write
+    try {
+      await write
+    } catch (error) {
+      this.dirty = true
+      throw error
+    } finally {
+      if (this.flushing === write) this.flushing = undefined
+    }
   }
 }

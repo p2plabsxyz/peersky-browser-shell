@@ -236,6 +236,10 @@ export class ElectronChromeExtensions extends EventEmitter {
 
     sessionMap.set(session, this)
 
+    // Each API follows extension loads and unloads; there are more of them
+    // than Node's default warning count.
+    ;((session.extensions || session) as any).setMaxListeners?.(100)
+
     const router = new ExtensionRouter(session)
     const store = new ExtensionStore(impl)
     const stateStore = new ExtensionStateStore(session)

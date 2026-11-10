@@ -43,7 +43,19 @@ export class SystemAPI {
     handle('system.storage.getAvailableCapacity', this.availableCapacity)
     handle('system.storage.ejectDevice', this.ejectDevice)
 
-    const onDisplays = () => this.ctx.router.broadcastEvent('system.display.onDisplayChanged')
+    SystemAPI.instances.add(this)
+    SystemAPI.watchDisplays()
+  }
+
+  /** One set of screen listeners for every session, however many there are. */
+  private static instances = new Set<SystemAPI>()
+  private static watchingDisplays = false
+  private static watchDisplays() {
+    if (SystemAPI.watchingDisplays) return
+    SystemAPI.watchingDisplays = true
+    const onDisplays = () => {
+      for (const api of SystemAPI.instances) api.ctx.router.broadcastEvent('system.display.onDisplayChanged')
+    }
     screen.on('display-added', onDisplays)
     screen.on('display-removed', onDisplays)
     screen.on('display-metrics-changed', onDisplays)
