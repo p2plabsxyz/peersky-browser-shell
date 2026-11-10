@@ -2,170 +2,47 @@ import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 
 /**
- * This is a very basic implementation of the permissions API. Likely
- * more work will be needed to integrate with the native permissions.
+ * chrome.permissions, on top of the session's ExtensionPermissions, which
+ * every other API checks against too. Optional permissions are granted only
+ * after a user gesture and the person's yes, and are kept across restarts.
  */
 export class PermissionsAPI {
-  private permissionMap = new Map<
-    /* extensionId */ string,
-    {
-      permissions: chrome.runtime.ManifestPermissions[]
-      origins: string[]
-    }
-  >()
-
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
     handle('permissions.contains', this.contains)
     handle('permissions.getAll', this.getAll)
     handle('permissions.remove', this.remove)
     handle('permissions.request', this.request)
-    this.ctx.router.setPermissionResolver(this.hasPermission)
-
-    const sessionExtensions = ctx.session.extensions || ctx.session
-    sessionExtensions.getAllExtensions().forEach((ext) => this.processExtension(ext))
-
-    sessionExtensions.on('extension-loaded', (_event, extension) => {
-      this.processExtension(extension)
-    })
-
-    sessionExtensions.on('extension-unloaded', (_event, extension) => {
-      this.permissionMap.delete(extension.id)
-    })
+    handle('permissions.addHostAccessRequest', this.hostAccessRequest)
+    handle('permissions.removeHostAccessRequest', this.hostAccessRequest)
   }
 
-  private processExtension(extension: Electron.Extension) {
-    const manifest: chrome.runtime.Manifest = extension.manifest
-    this.permissionMap.set(extension.id, {
-      permissions: (manifest.permissions || []) as chrome.runtime.ManifestPermissions[],
-      origins: manifest.host_permissions || [],
-    })
-  }
+  private contains = ({ extension }: ExtensionEvent, permissions: chrome.permissions.Permissions) =>
+    this.ctx.permissions.contains(extension as Electron.Extension, permissions || {})
 
-  private hasPermission = (
-    extensionId: string,
-    permission: chrome.runtime.ManifestPermissions,
-  ): boolean => {
-    const currentPermissions = this.permissionMap.get(extensionId)
-    return !!currentPermissions?.permissions.includes(permission)
-  }
+  private getAll = ({ extension }: ExtensionEvent) =>
+    this.ctx.permissions.getAll(extension as Electron.Extension)
 
-  private contains = (
-    { extension }: ExtensionEvent,
-    permissions: chrome.permissions.Permissions,
+  private remove = ({ extension }: ExtensionEvent, permissions: chrome.permissions.Permissions) =>
+    this.ctx.permissions.remove(extension as Electron.Extension, permissions || {})
+
+  private request = (event: ExtensionEvent, permissions: chrome.permissions.Permissions) =>
+    this.ctx.permissions.request(
+      event.extension as Electron.Extension,
+      permissions || {},
+      !!event.gesture || this.ctx.store.hasUserGesture(event.extension.id),
+    )
+
+  /**
+   * Chrome shows a request in its toolbar for the person to grant later. The
+   * shell has no such toolbar entry, so it only checks the tab exists.
+   */
+  private hostAccessRequest = (
+    _event: ExtensionEvent,
+    request: { tabId?: number; documentId?: string; pattern?: string } = {},
   ) => {
-    const currentPermissions = this.permissionMap.get(extension.id)
-    if (!currentPermissions) return false
-    const hasPermissions = permissions.permissions
-      ? permissions.permissions.every((permission) =>
-          currentPermissions.permissions.includes(permission),
-        )
-      : true
-    const hasOrigins = permissions.origins
-      ? permissions.origins.every((origin) => currentPermissions.origins.includes(origin))
-      : true
-    return hasPermissions && hasOrigins
-  }
-
-  private getAll = ({ extension }: ExtensionEvent) => {
-    const current = this.permissionMap.get(extension.id)
-    if (!current) {
-      return { permissions: [], origins: [] }
+    if (typeof request.tabId === 'number' && !this.ctx.store.getTabById(request.tabId)) {
+      throw new Error(`No tab with id: ${request.tabId}.`)
     }
-    return {
-      permissions: [...current.permissions],
-      origins: [...current.origins],
-    }
-  }
-
-  private remove = ({ extension }: ExtensionEvent, permissions: chrome.permissions.Permissions) => {
-    const current = this.permissionMap.get(extension.id)
-    if (!current) return false
-
-    const removedPermissions: chrome.runtime.ManifestPermissions[] = []
-    const removedOrigins: string[] = []
-
-    if (Array.isArray(permissions.permissions)) {
-      for (const permission of permissions.permissions) {
-        const index = current.permissions.indexOf(permission)
-        if (index !== -1) {
-          current.permissions.splice(index, 1)
-          removedPermissions.push(permission)
-        }
-      }
-    }
-
-    if (Array.isArray(permissions.origins)) {
-      for (const origin of permissions.origins) {
-        const index = current.origins.indexOf(origin)
-        if (index !== -1) {
-          current.origins.splice(index, 1)
-          removedOrigins.push(origin)
-        }
-      }
-    }
-
-    if (removedPermissions.length > 0 || removedOrigins.length > 0) {
-      this.ctx.router.sendEvent(extension.id, 'permissions.onRemoved', {
-        permissions: removedPermissions,
-        origins: removedOrigins,
-      })
-      return true
-    }
-
-    return false
-  }
-
-  private request = async (
-    { extension }: ExtensionEvent,
-    request: chrome.permissions.Permissions,
-  ) => {
-    const declaredPermissions = new Set([
-      ...(extension.manifest.permissions || []),
-      ...(extension.manifest.optional_permissions || []),
-    ])
-    const declaredOrigins = new Set([
-      ...(extension.manifest.host_permissions || []),
-      ...((extension.manifest as chrome.runtime.ManifestV3).optional_host_permissions || []),
-    ])
-
-    if (request.permissions && !request.permissions.every((p) => declaredPermissions.has(p))) {
-      throw new Error('Permissions request includes undeclared permission')
-    }
-    if (request.origins && !request.origins.every((o) => declaredOrigins.has(o))) {
-      throw new Error('Permissions request includes undeclared origin')
-    }
-
-    const granted = await this.ctx.store.requestPermissions(extension, request)
-    if (!granted) return false
-
-    const permissions = this.permissionMap.get(extension.id)
-    if (!permissions) return false
-    const addedPermissions: chrome.runtime.ManifestPermissions[] = []
-    const addedOrigins: string[] = []
-
-    if (request.origins) {
-      for (const origin of request.origins) {
-        if (!permissions.origins.includes(origin)) {
-          permissions.origins.push(origin)
-          addedOrigins.push(origin)
-        }
-      }
-    }
-    if (request.permissions) {
-      for (const permission of request.permissions) {
-        if (!permissions.permissions.includes(permission)) {
-          permissions.permissions.push(permission)
-          addedPermissions.push(permission)
-        }
-      }
-    }
-    if (addedPermissions.length > 0 || addedOrigins.length > 0) {
-      this.ctx.router.sendEvent(extension.id, 'permissions.onAdded', {
-        permissions: addedPermissions,
-        origins: addedOrigins,
-      })
-    }
-    return true
   }
 }

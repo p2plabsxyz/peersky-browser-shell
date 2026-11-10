@@ -1,4 +1,4 @@
-import { BrowserWindow, webContents } from 'electron'
+import { BrowserWindow, dialog, webContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { ContextMenuType } from './api/common'
@@ -287,12 +287,31 @@ export class ExtensionStore extends EventEmitter {
     extension: Electron.Extension,
     permissions: chrome.permissions.Permissions,
   ) {
-    if (typeof this.impl.requestPermissions !== 'function') {
-      // Default to allowed.
-      return true
+    if (typeof this.impl.requestPermissions === 'function') {
+      const result: unknown = await this.impl.requestPermissions(extension, permissions)
+      return typeof result === 'boolean' ? result : false
     }
-    const result: unknown = await this.impl.requestPermissions(extension, permissions)
-    return typeof result === 'boolean' ? result : false
+    // The host has no prompt of its own: ask with the system's, as Chrome asks
+    // with its own. Nothing is granted without the person's yes.
+    const lines = [
+      ...(permissions.permissions || []).map((p) => `• ${p}`),
+      ...(permissions.origins || []).map((o) => `• Read and change your data on ${o}`),
+    ]
+    const parent = this.getLastFocusedWindow()
+    const options: Electron.MessageBoxOptions = {
+      type: 'question',
+      buttons: ['Allow', 'Deny'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `"${extension.name}" is asking for more access`,
+      detail: lines.join('\n'),
+      noLink: true,
+    }
+    const { response } =
+      parent && !parent.isDestroyed()
+        ? await dialog.showMessageBox(parent, options)
+        : await dialog.showMessageBox(options)
+    return response === 0
   }
 
   // Resolve WebContents id to the cached chrome.tabs tab id.

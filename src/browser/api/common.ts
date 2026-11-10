@@ -1,6 +1,7 @@
 import { promises as fs } from 'node:fs'
 import * as path from 'node:path'
 import { BaseWindow, BrowserWindow, nativeImage } from 'electron'
+import { matchesGlob, matchesPattern as matchPattern } from '../match-pattern'
 
 export interface TabContents extends Electron.WebContents {
   favicon?: string
@@ -111,20 +112,13 @@ export const getIconImage = (extension: Electron.Extension) => {
   return iconAbsolutePath ? nativeImage.createFromPath(iconAbsolutePath) : undefined
 }
 
-const escapePattern = (pattern: string) => pattern.replace(/[\\^$+?.()|[\]{}]/g, '\\$&')
-
 /**
- * @see https://developer.chrome.com/extensions/match_patterns
+ * Chrome's match patterns: the host part matches hosts only, so a URL cannot
+ * pass by carrying the host in its path or query.
+ * @see https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns
  */
-export const matchesPattern = (pattern: string, url: string) => {
-  if (pattern === '<all_urls>') return true
-  const regexp = new RegExp(`^${pattern.split('*').map(escapePattern).join('.*')}$`)
-  return url.match(regexp)
-}
+export const matchesPattern = (pattern: string, url: string) => matchPattern(pattern, url)
 
-export const matchesTitlePattern = (pattern: string, title: string) => {
-  const regexp = new RegExp(`^${pattern.split('*').map(escapePattern).join('.*')}$`)
-  return title.match(regexp)
-}
+export const matchesTitlePattern = (pattern: string, title: string) => matchesGlob(pattern, title)
 
 export const getAllWindows = () => [...BaseWindow.getAllWindows(), ...BrowserWindow.getAllWindows()]

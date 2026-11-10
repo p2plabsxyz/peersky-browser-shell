@@ -2,6 +2,68 @@ import { app, ipcMain, Session } from 'electron'
 import debug from 'debug'
 
 import { resolvePartition } from './partition'
+import type { ExtensionPermissions } from './permissions'
+
+/** What the calling context adds to a call, besides its arguments. */
+export interface CallMeta {
+  /** The call came while the page had a user gesture (a click, a key press). */
+  gesture?: boolean
+}
+
+const normalizeMeta = (meta: unknown): CallMeta =>
+  meta && typeof meta === 'object' ? { gesture: (meta as CallMeta).gesture === true } : {}
+
+/**
+ * The permission each API namespace needs, as Chrome hides the namespace from
+ * an extension without it. Handlers may name their own instead. Namespaces
+ * missing here (tabs, windows, runtime, permissions, ...) need none.
+ */
+const NAMESPACE_PERMISSIONS: Record<string, string | string[]> = {
+  alarms: 'alarms',
+  bookmarks: 'bookmarks',
+  browsingData: 'browsingData',
+  contentSettings: 'contentSettings',
+  contextMenus: 'contextMenus',
+  cookies: 'cookies',
+  debugger: 'debugger',
+  declarativeContent: 'declarativeContent',
+  declarativeNetRequest: ['declarativeNetRequest', 'declarativeNetRequestWithHostAccess'],
+  desktopCapture: 'desktopCapture',
+  downloads: 'downloads',
+  fontSettings: 'fontSettings',
+  history: 'history',
+  identity: 'identity',
+  idle: 'idle',
+  notifications: 'notifications',
+  offscreen: 'offscreen',
+  pageCapture: 'pageCapture',
+  power: 'power',
+  privacy: 'privacy',
+  proxy: 'proxy',
+  readingList: 'readingList',
+  scripting: 'scripting',
+  search: 'search',
+  sessions: 'sessions',
+  sidePanel: 'sidePanel',
+  storage: 'storage',
+  'system.cpu': 'system.cpu',
+  'system.display': 'system.display',
+  'system.memory': 'system.memory',
+  'system.storage': 'system.storage',
+  tabCapture: 'tabCapture',
+  tabGroups: 'tabGroups',
+  topSites: 'topSites',
+  tts: 'tts',
+  userScripts: 'userScripts',
+  webNavigation: 'webNavigation',
+  webRequest: 'webRequest',
+}
+
+/** The permission a handler such as 'storage.local.get' needs, if any. */
+export const permissionForHandler = (handlerName: string): string | string[] | undefined => {
+  const [first, second] = handlerName.split('.')
+  return NAMESPACE_PERMISSIONS[`${first}.${second}`] ?? NAMESPACE_PERMISSIONS[first]
+}
 
 // Shorten base64 encoded icons
 const shortenValues = (k: string, v: any) =>
@@ -50,6 +112,7 @@ interface RoutingDelegateObserver {
     event: Electron.IpcMainInvokeEvent,
     extensionId: string | undefined,
     handlerName: string,
+    meta: CallMeta,
     ...args: any[]
   ): Promise<void>
   addListener(listener: EventListener, extensionId: string, eventName: string): void
@@ -108,6 +171,7 @@ class RoutingDelegate {
     event: Electron.IpcMainInvokeEvent,
     extensionId: string,
     handlerName: string,
+    meta: CallMeta,
     ...args: any[]
   ) => {
     d(`received '${handlerName}'`, args)
@@ -116,13 +180,18 @@ class RoutingDelegate {
     if (!observer) return undefined
 
     try {
-      return await observer.onExtensionMessage(event, extensionId, handlerName, ...args)
+      return await observer.onExtensionMessage(
+        event,
+        extensionId,
+        handlerName,
+        normalizeMeta(meta),
+        ...args,
+      )
     } catch (err) {
-      // Swallow teardown / handler failures so fire-and-forget callers do not
-      // see unhandled rejections. Promise rejection propagation belongs in a
-      // dedicated cross-cutting change, not sidePanel.
-      d('handler failed for %s (extension context may be torn down): %o', handlerName, err)
-      return undefined
+      // The extension sees the failure as a rejected promise or as
+      // runtime.lastError, with the message Chrome gives.
+      d('handler failed for %s: %o', handlerName, err)
+      throw new Error(err instanceof Error ? err.message : String(err))
     }
   }
 
@@ -141,7 +210,7 @@ class RoutingDelegate {
 
     const observer = this.sessionMap.get(ses)
 
-    return observer?.onExtensionMessage(event, undefined, handlerName, ...args)
+    return observer?.onExtensionMessage(event, undefined, handlerName, {}, ...args)
   }
 
   private onAddListener = (event: IpcAnyEvent, extensionId: string, eventName: string) => {
@@ -192,9 +261,13 @@ type ExtendedExtension = Omit<Electron.Extension, 'manifest'> & {
   manifest: chrome.runtime.Manifest
 }
 
-export type ExtensionEvent =
+export type ExtensionEvent = (
   | { type: 'frame'; sender: Electron.WebContents; extension: ExtendedExtension }
   | { type: 'service-worker'; sender: Electron.ServiceWorkerMain; extension: ExtendedExtension }
+) & {
+  /** The calling page had a user gesture when it made the call. */
+  gesture?: boolean
+}
 
 export type HandlerCallback = (event: ExtensionEvent, ...args: any[]) => any
 
@@ -203,8 +276,12 @@ export interface HandlerOptions {
   allowRemote?: boolean
   /** Whether an extension context is required to invoke the handler. */
   extensionContext: boolean
-  /** Required extension permission to run the handler. */
-  permission?: chrome.runtime.ManifestPermissions
+  /**
+   * Permission the handler needs; any one of a list will do. Defaults to the
+   * namespace's permission. `null` needs none, for the few calls Chrome
+   * allows without it, such as management.getSelf.
+   */
+  permission?: chrome.runtime.ManifestPermissions | string | string[] | null
 }
 
 interface Handler extends HandlerOptions {
@@ -248,10 +325,9 @@ function isUrgentNavigationEvent(eventName: string) {
 export class ExtensionRouter {
   private handlers: HandlerMap = new Map()
   private listeners: Map<EventName, EventListener[]> = new Map()
-  private permissionResolver?: (
-    extensionId: string,
-    permission: chrome.runtime.ManifestPermissions,
-  ) => boolean
+  private permissions?: ExtensionPermissions
+  /** Events that wait for the extension to add a listener: `${extensionId} ${eventName}`. */
+  private waiting: Map<string, { args: any[]; expires: number }[]> = new Map()
 
   /**
    * Collection of all extension hosts in the session.
@@ -356,6 +432,45 @@ export class ExtensionRouter {
         this.observeListenerHost(listener.host)
       }
     }
+
+    // A worker that adds a listener is running, whatever an earlier start
+    // attempt said: forget that failure, or its events would wait it out.
+    if (listener.type === 'service-worker') this.swStartFailures.delete(extensionId)
+
+    const key = `${extensionId} ${eventName}`
+    const waiting = this.waiting.get(key)
+    if (waiting) {
+      this.waiting.delete(key)
+      const now = Date.now()
+      for (const entry of waiting) {
+        if (entry.expires < now) continue
+        this.deliverToServiceWorkerOrHost(listener, extensionId, `crx-${eventName}`, entry.args, 0)
+      }
+    }
+  }
+
+  /**
+   * Sends an event that the extension may not be listening for yet, such as
+   * runtime.onInstalled, which fires before its service worker has run. The
+   * event goes to listeners there now, or else to the first one added within
+   * `waitMs`.
+   */
+  sendEventWhenListening(extensionId: string, eventName: string, args: any[], waitMs = 30_000) {
+    const hasListener = this.listeners.get(eventName)?.some((l) => l.extensionId === extensionId)
+    if (hasListener) {
+      this.sendEvent(extensionId, eventName, ...args)
+      return
+    }
+    const key = `${extensionId} ${eventName}`
+    const list = this.waiting.get(key) || []
+    list.push({ args, expires: Date.now() + waitMs })
+    this.waiting.set(key, list)
+    // Starting the worker runs its top-level code, which adds the listener. It
+    // may not be registered yet; it starts by itself then, so a failure here
+    // is not one to remember.
+    this.session.serviceWorkers
+      .startWorkerForScope(`chrome-extension://${extensionId}/`)
+      .catch(() => {})
   }
 
   /**
@@ -481,16 +596,29 @@ export class ExtensionRouter {
     return handler
   }
 
-  setPermissionResolver(
-    resolver: (extensionId: string, permission: chrome.runtime.ManifestPermissions) => boolean,
-  ) {
-    this.permissionResolver = resolver
+  /** The session's permissions, which every handler call is checked against. */
+  setPermissions(permissions: ExtensionPermissions) {
+    this.permissions = permissions
+  }
+
+  /**
+   * Where the call came from. An extension may only call as itself: its id
+   * must be the origin of the page or worker that sent the call.
+   */
+  private senderUrl(event: IpcInvokeEvent): string | undefined {
+    if (event.type === 'service-worker') return event.serviceWorker?.scope
+    try {
+      return (event as Electron.IpcMainInvokeEvent).senderFrame?.url
+    } catch {
+      return undefined
+    }
   }
 
   async onExtensionMessage(
     event: IpcInvokeEvent,
     extensionId: string | undefined,
     handlerName: string,
+    meta: CallMeta,
     ...args: any[]
   ) {
     const { session } = this
@@ -507,25 +635,29 @@ export class ExtensionRouter {
       throw new Error(`${handlerName} was sent from an unknown extension context`)
     }
 
-    if (handler.permission) {
-      const manifest: chrome.runtime.Manifest = extension?.manifest
-      const hasManifestPermission = !!manifest.permissions?.includes(handler.permission)
-      const hasGrantedPermission =
-        !!extension &&
-        !!this.permissionResolver?.(extension.id, handler.permission as chrome.runtime.ManifestPermissions)
-      if (!extension || (!hasManifestPermission && !hasGrantedPermission)) {
-        throw new Error(
-          `${handlerName} requires an extension with ${handler.permission} permissions`,
-        )
+    if (extension) {
+      const from = this.senderUrl(event)
+      if (!from || !from.startsWith(`chrome-extension://${extension.id}/`)) {
+        throw new Error(`${handlerName} was sent from outside the extension`)
+      }
+    }
+
+    const required = handler.permission === undefined ? permissionForHandler(handlerName) : handler.permission
+    if (required) {
+      const anyOf = Array.isArray(required) ? required : [required]
+      const allowed = !!extension && anyOf.some((p) => this.hasPermission(extension, p))
+      if (!allowed) {
+        throw new Error(`'${handlerName}' requires the '${anyOf[0]}' permission.`)
       }
     }
 
     // Some handlers allow calls without a loaded extension context.
     const extensionForEvent = extension ?? (extensionId ? { id: extensionId, manifest: {} } as ExtendedExtension : undefined)
+    const gesture = meta?.gesture === true
     const extEvent: ExtensionEvent =
       event.type === 'frame'
-        ? { type: event.type, sender: event.sender, extension: extensionForEvent! }
-        : { type: event.type, sender: event.serviceWorker, extension: extensionForEvent! }
+        ? { type: event.type, sender: event.sender, extension: extensionForEvent!, gesture }
+        : { type: event.type, sender: event.serviceWorker, extension: extensionForEvent!, gesture }
 
     const result = await handler.callback(extEvent, ...args)
 
@@ -534,12 +666,21 @@ export class ExtensionRouter {
     return result
   }
 
+  private hasPermission(extension: Electron.Extension, permission: string) {
+    if (this.permissions) return this.permissions.has(extension, permission)
+    return !!(extension.manifest as chrome.runtime.Manifest).permissions?.includes(permission as any)
+  }
+
   private handle(name: string, callback: HandlerCallback, opts?: Partial<HandlerOptions>): void {
+    const permission = opts?.permission
     this.handlers.set(name, {
       callback,
       extensionContext: typeof opts?.extensionContext === 'boolean' ? opts.extensionContext : true,
       allowRemote: typeof opts?.allowRemote === 'boolean' ? opts.allowRemote : false,
-      permission: typeof opts?.permission === 'string' ? opts.permission : undefined,
+      permission:
+        permission === null || typeof permission === 'string' || Array.isArray(permission)
+          ? permission
+          : undefined,
     })
   }
 

@@ -36,6 +36,25 @@ import { ExtensionStateStore } from './state-store'
 import { AlarmsAPI } from './api/alarms'
 import { DownloadsAPI } from './api/downloads'
 import { SidePanelAPI } from './api/side-panel'
+import { SystemAPI } from './api/system'
+import { BookmarksAPI } from './api/bookmarks'
+import { HistoryAPI } from './api/history'
+import { TopSitesAPI } from './api/top-sites'
+import { ReadingListAPI } from './api/reading-list'
+import { SearchAPI } from './api/search'
+import { OmniboxAPI } from './api/omnibox'
+import { SessionsAPI } from './api/sessions'
+import { TabGroupsAPI } from './api/tab-groups'
+import { BrowsingDataAPI } from './api/browsing-data'
+import { ContentSettingsAPI } from './api/content-settings'
+import { FontSettingsAPI } from './api/font-settings'
+import { PrivacyAPI } from './api/privacy'
+import { TtsAPI } from './api/tts'
+import { PageCaptureAPI } from './api/page-capture'
+import { TabCaptureAPI } from './api/tab-capture'
+import { DesktopCaptureAPI } from './api/desktop-capture'
+import { DeclarativeContentAPI } from './api/declarative-content'
+import { ExtensionPermissions } from './permissions'
 
 function checkVersion() {
   const electronVersion = process.versions.electron
@@ -171,6 +190,24 @@ export class ElectronChromeExtensions extends EventEmitter {
     downloads: DownloadsAPI
     scripting: ScriptingAPI
     sidePanel: SidePanelAPI
+    system: SystemAPI
+    bookmarks: BookmarksAPI
+    history: HistoryAPI
+    topSites: TopSitesAPI
+    readingList: ReadingListAPI
+    search: SearchAPI
+    omnibox: OmniboxAPI
+    sessions: SessionsAPI
+    tabGroups: TabGroupsAPI
+    browsingData: BrowsingDataAPI
+    contentSettings: ContentSettingsAPI
+    fontSettings: FontSettingsAPI
+    privacy: PrivacyAPI
+    tts: TtsAPI
+    pageCapture: PageCaptureAPI
+    tabCapture: TabCaptureAPI
+    desktopCapture: DesktopCaptureAPI
+    declarativeContent: DeclarativeContentAPI
     storageSync: StorageSyncAPI
     tabs: TabsAPI
     webNavigation: WebNavigationAPI
@@ -194,6 +231,12 @@ export class ElectronChromeExtensions extends EventEmitter {
     const router = new ExtensionRouter(session)
     const store = new ExtensionStore(impl)
     const stateStore = new ExtensionStateStore(session)
+    const permissions = new ExtensionPermissions({
+      stateStore,
+      sendEvent: (extensionId, eventName, ...args) => router.sendEvent(extensionId, eventName, ...args),
+      prompt: (extension, request) => store.requestPermissions(extension, request as any),
+    })
+    router.setPermissions(permissions)
 
     this.ctx = {
       emit: this.emit.bind(this),
@@ -201,6 +244,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       session,
       store,
       stateStore,
+      permissions,
     }
     void stateStore.hydrate().catch((error) => {
       console.error('Failed to hydrate extension API state store:', error)
@@ -228,6 +272,24 @@ export class ElectronChromeExtensions extends EventEmitter {
       downloads: new DownloadsAPI(this.ctx),
       scripting: new ScriptingAPI(this.ctx),
       sidePanel: new SidePanelAPI(this.ctx),
+      system: new SystemAPI(this.ctx),
+      bookmarks: new BookmarksAPI(this.ctx),
+      history: new HistoryAPI(this.ctx),
+      topSites: new TopSitesAPI(this.ctx),
+      readingList: new ReadingListAPI(this.ctx),
+      search: new SearchAPI(this.ctx),
+      omnibox: new OmniboxAPI(this.ctx),
+      sessions: new SessionsAPI(this.ctx),
+      tabGroups: new TabGroupsAPI(this.ctx),
+      browsingData: new BrowsingDataAPI(this.ctx),
+      contentSettings: new ContentSettingsAPI(this.ctx),
+      fontSettings: new FontSettingsAPI(this.ctx),
+      privacy: new PrivacyAPI(this.ctx),
+      tts: new TtsAPI(this.ctx),
+      pageCapture: new PageCaptureAPI(this.ctx),
+      tabCapture: new TabCaptureAPI(this.ctx),
+      desktopCapture: new DesktopCaptureAPI(this.ctx),
+      declarativeContent: new DeclarativeContentAPI(this.ctx),
       storageSync: new StorageSyncAPI(this.ctx),
       tabs: new TabsAPI(this.ctx),
       webNavigation: new WebNavigationAPI(this.ctx),
@@ -292,6 +354,10 @@ export class ElectronChromeExtensions extends EventEmitter {
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     sessionExtensions.addListener('extension-loaded', (_event, extension) => {
       readLoadedExtensionManifest(this.ctx, extension)
+      void this.ctx.permissions
+        .load(extension)
+        .then(() => this.api.runtime.onExtensionLoaded(extension))
+        .catch((error) => console.error(`Failed to set up ${extension.id}:`, error))
 
       // Start MV3 background service workers so extensions can
       // initialize themselves (enable DNR rulesets, set up event
@@ -305,10 +371,15 @@ export class ElectronChromeExtensions extends EventEmitter {
     if (typeof getAll === 'function') {
       const list = getAll.call(sessionExtensions) || []
       for (const ext of list) {
+        void this.ctx.permissions
+          .load(ext)
+          .then(() => this.api.runtime.onExtensionLoaded(ext))
+          .catch((error) => console.error(`Failed to set up ${ext.id}:`, error))
         this.startExtensionServiceWorker(ext)
       }
     }
-    sessionExtensions.addListener('extension-unloaded', () => {
+    sessionExtensions.addListener('extension-unloaded', (_event, extension) => {
+      this.ctx.permissions.unload(extension.id)
       void this.ctx.stateStore.flush().catch((error) => {
         console.error('Failed to flush extension API state store:', error)
       })

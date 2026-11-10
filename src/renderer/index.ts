@@ -1,7 +1,27 @@
 import { ipcRenderer, contextBridge, webFrame } from 'electron'
 import { addExtensionListener, removeExtensionListener } from './event'
+import { API_CONSTANTS } from './constants'
+import { API_SCHEMA } from './api-schema'
 
 export const injectExtensionAPIs = () => {
+  // A click or key press in this page lets a call do what Chrome allows only
+  // during a user gesture, such as permissions.request. It is read here, in the
+  // preload's own world, where the page's scripts cannot fake it.
+  const hasUserGesture = () => {
+    try {
+      return !!(globalThis as any).navigator?.userActivation?.isActive
+    } catch {
+      return false
+    }
+  }
+
+  // Electron wraps errors from the main process as "Error invoking remote
+  // method 'crx-msg': Error: <message>". Extensions see Chrome's message only.
+  const cleanIpcError = (e: unknown) => {
+    const message = e instanceof Error ? e.message : String(e)
+    return message.replace(/^Error invoking remote method '[^']*': (?:[A-Za-z]*Error: )?/, '')
+  }
+
   interface ExtensionMessageOptions {
     noop?: boolean
     defaultResponse?: any
@@ -36,13 +56,16 @@ export const injectExtensionAPIs = () => {
     let lastError: { message: string } | undefined
 
     try {
-      result = await ipcRenderer.invoke('crx-msg', extensionId, fnName, ...args)
+      result = await ipcRenderer.invoke(
+        'crx-msg',
+        extensionId,
+        fnName,
+        { gesture: hasUserGesture() },
+        ...args,
+      )
     } catch (e) {
-      console.error(e)
       result = undefined
-      lastError = {
-        message: e instanceof Error ? e.message : String(e),
-      }
+      lastError = { message: cleanIpcError(e) }
     }
 
     if (process.env.NODE_ENV === 'development') {
@@ -115,7 +138,7 @@ export const injectExtensionAPIs = () => {
 
   // Function body to run in the main world.
   // IMPORTANT: This must be self-contained, no closure variable will be included!
-  function mainWorldScript() {
+  function mainWorldScript(constants: Record<string, any>, schema: Record<string, any>) {
     // Use context bridge API or closure variable when context isolation is disabled.
     const electron = ((globalThis as any).electron as typeof electronContext) || electronContext
 
@@ -310,6 +333,7 @@ export const injectExtensionAPIs = () => {
     type APIFactoryMap = {
       [apiName in keyof typeof chrome]: {
         shouldInject?: () => boolean
+        permission?: string | string[]
         factory: (
           base: DeepPartial<(typeof chrome)[apiName]>,
         ) => DeepPartial<(typeof chrome)[apiName]>
@@ -374,6 +398,23 @@ export const injectExtensionAPIs = () => {
     /**
      * Factories for each additional chrome.* API.
      */
+    // Which context this is. Chrome gives a service worker a few less APIs
+    // than an extension page (no extension.getViews, for one).
+    const contextKind =
+      typeof (globalThis as any).ServiceWorkerGlobalScope === 'function' &&
+      globalThis instanceof (globalThis as any).ServiceWorkerGlobalScope
+        ? 'worker'
+        : 'page'
+
+    // An API shows up only for an extension that asks for its permission, in
+    // its permissions or optional_permissions, as in Chrome. The main process
+    // checks again on every call, and checks optional ones were granted.
+    const declared = new Set<string>(
+      [
+        ...(((manifest as any).permissions as unknown[]) || []),
+        ...(((manifest as any).optional_permissions as unknown[]) || []),
+      ].filter((p): p is string => typeof p === 'string'),
+    )
     const apiDefinitions: any = {
       action: {
         shouldInject: () => manifest.manifest_version === 3 && !!manifest.action,
@@ -386,7 +427,7 @@ export const injectExtensionAPIs = () => {
       },
 
       alarms: {
-        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('alarms'),
+        permission: 'alarms',
         factory: (base) => {
           return {
             ...base,
@@ -401,8 +442,7 @@ export const injectExtensionAPIs = () => {
       },
 
       sidePanel: {
-        shouldInject: () =>
-          !!(manifest.permissions as string[] | undefined)?.includes('sidePanel'),
+        permission: 'sidePanel',
         factory: (base) => {
           return {
             ...base,
@@ -428,7 +468,7 @@ export const injectExtensionAPIs = () => {
       },
 
       debugger: {
-        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('debugger'),
+        permission: 'debugger',
         factory: (base) => {
           return {
             ...base,
@@ -443,6 +483,7 @@ export const injectExtensionAPIs = () => {
       },
 
       contextMenus: {
+        permission: 'contextMenus',
         factory: (base) => {
           let menuCounter = 0
           const menuCallbacks: {
@@ -489,6 +530,7 @@ export const injectExtensionAPIs = () => {
       },
 
       cookies: {
+        permission: 'cookies',
         factory: (base) => {
           return {
             ...base,
@@ -503,7 +545,7 @@ export const injectExtensionAPIs = () => {
       },
 
       userScripts: {
-        shouldInject: () => !!manifest.permissions?.includes('userScripts'),
+        permission: 'userScripts',
         factory: () => ({
           getScripts: invokeExtension('userScripts.getScripts'),
           register: invokeExtension('userScripts.register'),
@@ -518,6 +560,7 @@ export const injectExtensionAPIs = () => {
       },
 
       offscreen: {
+        permission: 'offscreen',
         factory: () => ({
           createDocument: invokeExtension('offscreen.createDocument'),
           closeDocument: invokeExtension('offscreen.closeDocument'),
@@ -543,6 +586,7 @@ export const injectExtensionAPIs = () => {
       },
 
       declarativeNetRequest: {
+        permission: ['declarativeNetRequest', 'declarativeNetRequestWithHostAccess'],
         factory: (base) => {
           return {
             ...base,
@@ -559,8 +603,8 @@ export const injectExtensionAPIs = () => {
         },
       },
 
-      // TODO: implement
       downloads: {
+        permission: 'downloads',
         factory: (base) => {
           return {
             ...base,
@@ -624,7 +668,7 @@ export const injectExtensionAPIs = () => {
             }
             return views
           }
-          return {
+          const api: any = {
             ...base,
             isAllowedFileSchemeAccess: invokeExtension('extension.isAllowedFileSchemeAccess'),
             isAllowedIncognitoAccess: invokeExtension('extension.isAllowedIncognitoAccess'),
@@ -640,11 +684,20 @@ export const injectExtensionAPIs = () => {
               return result
             },
           }
+          // A service worker has no views, and Manifest V3 has no getURL or
+          // background page, as in Chrome.
+          if (contextKind === 'worker') delete api.getViews
+          if (manifest.manifest_version === 3) {
+            for (const name of ['getURL', 'getBackgroundPage', 'getExtensionTabs', 'sendRequest', 'onRequest', 'onRequestExternal', 'lastError']) {
+              delete api[name]
+            }
+          }
+          return api
         },
       },
 
       identity: {
-        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('identity'),
+        permission: 'identity',
         factory: (base) => {
           const redirectDomain = 'chromiumapp.org'
           const redirectBase = extensionId
@@ -661,13 +714,36 @@ export const injectExtensionAPIs = () => {
       },
 
       management: {
-        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('management'),
-        factory: (base) => ({
-          ...base,
-          getSelf: invokeExtension('management.getSelf'),
-          getAll: invokeExtension('management.getAll'),
-          get: invokeExtension('management.get'),
-        }),
+        // Every extension has getSelf and the two calls about itself; the rest
+        // needs the "management" permission.
+        factory: (base) => {
+          const api: any = {
+            getSelf: invokeExtension('management.getSelf'),
+            getPermissionWarningsByManifest: invokeExtension(
+              'management.getPermissionWarningsByManifest',
+            ),
+            uninstallSelf: invokeExtension('management.uninstallSelf'),
+          }
+          if (declared.has('management')) {
+            for (const method of [
+              'createAppShortcut',
+              'generateAppForLink',
+              'get',
+              'getAll',
+              'getPermissionWarningsById',
+              'launchApp',
+              'setEnabled',
+              'setLaunchType',
+              'uninstall',
+            ]) {
+              api[method] = invokeExtension(`management.${method}`)
+            }
+            for (const event of ['onDisabled', 'onEnabled', 'onInstalled', 'onUninstalled']) {
+              api[event] = new ExtensionEvent(`management.${event}`)
+            }
+          }
+          return api
+        },
       },
 
       i18n: {
@@ -695,6 +771,7 @@ export const injectExtensionAPIs = () => {
       },
 
       notifications: {
+        permission: 'notifications',
         factory: (base) => {
           return {
             ...base,
@@ -725,6 +802,7 @@ export const injectExtensionAPIs = () => {
       },
 
       privacy: {
+        permission: 'privacy',
         factory: (base) => {
           return {
             ...base,
@@ -745,7 +823,7 @@ export const injectExtensionAPIs = () => {
       },
 
       proxy: {
-        shouldInject: () => !!(manifest.permissions as string[] | undefined)?.includes('proxy'),
+        permission: 'proxy',
         factory: (base) => {
           return {
             ...base,
@@ -761,9 +839,7 @@ export const injectExtensionAPIs = () => {
       },
 
       scripting: {
-        shouldInject: () =>
-          manifest.manifest_version === 3 ||
-          !!(manifest.permissions as string[] | undefined)?.includes('scripting'),
+        permission: 'scripting',
         factory: (base) => {
           const ipcExecuteScript = invokeExtension('scripting.executeScript')
           return {
@@ -809,11 +885,17 @@ export const injectExtensionAPIs = () => {
           patched.getContexts = invokeExtension('runtime.getContexts')
           patched.openOptionsPage = invokeExtension('runtime.openOptionsPage')
           patched.sendNativeMessage = invokeExtension('runtime.sendNativeMessage')
+          patched.requestUpdateCheck = invokeExtension('runtime.requestUpdateCheck')
+          // Electron never fires these. The main process does, once the
+          // extension has added its listener.
+          patched.onInstalled = new ExtensionEvent('runtime.onInstalled')
+          patched.onStartup = new ExtensionEvent('runtime.onStartup')
           return patched
         },
       },
 
       storage: {
+        permission: 'storage',
         factory: (base) => {
           const customOnChanged = new ExtensionEvent('storage.onChanged')
           const originalAddListener = base?.onChanged?.addListener?.bind(base.onChanged)
@@ -970,11 +1052,30 @@ export const injectExtensionAPIs = () => {
             onMoved: new ExtensionEvent('tabs.onMoved'),
             onHighlighted: new ExtensionEvent('tabs.onHighlighted'),
           }
+          // Manifest V3 has no tabs.executeScript, insertCSS or the other
+          // calls replaced by chrome.scripting, as in Chrome.
+          if (manifest.manifest_version === 3) {
+            for (const name of [
+              'executeScript',
+              'insertCSS',
+              'removeCSS',
+              'getAllInWindow',
+              'getSelected',
+              'sendRequest',
+              'onActiveChanged',
+              'onHighlightChanged',
+              'onSelectionChanged',
+              'onRequest',
+            ]) {
+              delete (api as any)[name]
+            }
+          }
           return api
         },
       },
 
       topSites: {
+        permission: 'topSites',
         factory: () => {
           return {
             get: invokeExtension('topSites.get', { noop: true, defaultResponse: [] }),
@@ -983,8 +1084,7 @@ export const injectExtensionAPIs = () => {
       },
 
       webNavigation: {
-        shouldInject: () =>
-          !!(manifest.permissions as string[] | undefined)?.includes('webNavigation'),
+        permission: 'webNavigation',
         factory: (base) => {
           return {
             ...base,
@@ -1008,6 +1108,7 @@ export const injectExtensionAPIs = () => {
       },
 
       webRequest: {
+        permission: 'webRequest',
         factory: (base) => {
           const onBeforeRequestEvent = new ExtensionEvent<
             (details: chrome.webRequest.WebRequestBodyDetails) =>
@@ -1576,21 +1677,109 @@ export const injectExtensionAPIs = () => {
       },
     }
 
-    // Initialize APIs
-    Object.keys(apiDefinitions).forEach((apiName) => {
-      const baseApi = chrome[apiName] as any
-      const api = (apiDefinitions as any)[apiName] as any
-      if (!api) return
+    const isAllowed = (def: any) => {
+      if (!def) return false
+      if (def.permission) {
+        const anyOf: string[] = Array.isArray(def.permission) ? def.permission : [def.permission]
+        if (!anyOf.some((p) => declared.has(p))) return false
+      }
+      if (def.manifestKey && !(manifest as any)[def.manifestKey]) return false
+      if (def.manifestVersion && manifest.manifest_version !== def.manifestVersion) return false
+      if (def.contexts && !def.contexts.includes(contextKind)) return false
+      if (def.shouldInject && !def.shouldInject()) return false
+      return true
+    }
+    const isGated = (def: any) =>
+      !!def && !!(def.permission || def.manifestKey || def.manifestVersion || def.contexts)
 
-      // Allow APIs to opt-out of being available in this context.
-      if (api.shouldInject && !api.shouldInject()) return
-
-      Object.defineProperty(chrome, apiName, {
-        value: api.factory(baseApi),
+    const getPath = (root: any, dotted: string) =>
+      dotted.split('.').reduce((node, key) => (node == null ? undefined : node[key]), root)
+    const setPath = (root: any, dotted: string, value: any) => {
+      const parts = dotted.split('.')
+      let node = root
+      for (const part of parts.slice(0, -1)) {
+        if (!node[part] || typeof node[part] !== 'object') {
+          Object.defineProperty(node, part, { value: {}, enumerable: true, configurable: true, writable: true })
+        }
+        node = node[part]
+      }
+      Object.defineProperty(node, parts[parts.length - 1], {
+        value,
         enumerable: true,
         configurable: true,
+        writable: true,
       })
-    })
+    }
+    const deletePath = (root: any, dotted: string) => {
+      const parts = dotted.split('.')
+      const parent = getPath(root, parts.slice(0, -1).join('.')) ?? (parts.length === 1 ? root : undefined)
+      if (parent && parts[parts.length - 1] in parent) {
+        try {
+          delete parent[parts[parts.length - 1]]
+        } catch {}
+      }
+    }
+
+    // Methods and events listed in the schema for the main process to serve.
+    // `override` replaces Electron's own bindings, some of which have nothing
+    // behind them and crash the browser when called (chrome.system.*).
+    const applySchema = (name: string, spec: any, target: any) => {
+      for (const method of spec.methods || []) {
+        if (spec.override || !(method in target)) target[method] = invokeExtension(`${name}.${method}`)
+      }
+      for (const event of spec.events || []) {
+        if (spec.override || !(event in target)) target[event] = new ExtensionEvent(`${name}.${event}`)
+      }
+      for (const method of spec.remove || []) {
+        try {
+          delete target[method]
+        } catch {}
+      }
+      return target
+    }
+
+    // Chrome's enum objects and constants (tabs.TAB_ID_NONE,
+    // downloads.State.COMPLETE, ...). A nested namespace that this context
+    // does not have is skipped rather than made up from its constants.
+    const applyConstants = (target: any, values: any) => {
+      if (!target || !values) return
+      for (const [key, value] of Object.entries(values)) {
+        if (value && typeof value === 'object') {
+          const isEnum = Object.values(value as object).every((v) => typeof v !== 'object')
+          if (target[key] && typeof target[key] === 'object') applyConstants(target[key], value)
+          else if (isEnum && /^[A-Z]/.test(key)) target[key] = { ...(value as object) }
+        } else if (!(key in target)) {
+          target[key] = value
+        }
+      }
+    }
+
+    // Initialize APIs: the hand-written definitions, then everything else the
+    // schema lists.
+    const apiNames = new Set([...Object.keys(apiDefinitions), ...Object.keys(schema || {})])
+    const injected: string[] = []
+    for (const apiName of apiNames) {
+      const def = (apiDefinitions as any)[apiName]
+      const spec = schema?.[apiName]
+      const gate = { ...(spec || {}), ...(def || {}) }
+      if (!isAllowed(gate)) {
+        // Chrome leaves the namespace out entirely without its permission.
+        if (isGated(gate)) deletePath(chrome, apiName)
+        continue
+      }
+      const base = getPath(chrome, apiName)
+      // An overriding schema entry starts from a fresh object: Electron's own
+      // binding objects may not let their members be replaced.
+      let api = def
+        ? def.factory(base)
+        : spec?.override || !base || typeof base !== 'object'
+          ? {}
+          : base
+      if (spec) api = applySchema(apiName, spec, api)
+      applyConstants(api, getPath(constants, apiName))
+      setPath(chrome, apiName, api)
+      injected.push(apiName)
+    }
 
     // Chromium 150 exposes a native `browser` alias in extension contexts as a
     // SEPARATE object, and extensions that prefer it (webextension-polyfill,
@@ -1599,18 +1788,20 @@ export const injectExtensionAPIs = () => {
     // so both globals agree.
     const browserAlias = (globalThis as any).browser
     if (browserAlias && browserAlias !== chrome) {
-      Object.keys(apiDefinitions).forEach((apiName) => {
-        const api = (apiDefinitions as any)[apiName] as any
-        if (!api) return
-        if (api.shouldInject && !api.shouldInject()) return
+      for (const apiName of apiNames) {
         try {
-          Object.defineProperty(browserAlias, apiName, {
-            value: (chrome as any)[apiName],
-            enumerable: true,
-            configurable: true,
-          })
+          const root = apiName.split('.')[0]
+          if (root in chrome) {
+            Object.defineProperty(browserAlias, root, {
+              value: (chrome as any)[root],
+              enumerable: true,
+              configurable: true,
+            })
+          } else if (root in browserAlias) {
+            delete browserAlias[root]
+          }
         } catch (_) {}
-      })
+      }
     }
 
     // Remove access to internals
@@ -1627,7 +1818,7 @@ export const injectExtensionAPIs = () => {
 
   if (!process.contextIsolated) {
     console.warn(`injectExtensionAPIs: context isolation disabled in ${location.href}`)
-    mainWorldScript()
+    mainWorldScript(API_CONSTANTS, API_SCHEMA)
     return
   }
 
@@ -1636,13 +1827,17 @@ export const injectExtensionAPIs = () => {
     contextBridge.exposeInMainWorld('electron', electronContext)
 
     // Mutate global 'chrome' object with additional APIs in the main world.
+    // The constants and schema are plain data, copied in as arguments.
     if ('executeInMainWorld' in contextBridge) {
       ;(contextBridge as any).executeInMainWorld({
         func: mainWorldScript,
+        args: [API_CONSTANTS, API_SCHEMA],
       })
     } else {
       // TODO(mv3): remove webFrame usage
-      webFrame.executeJavaScript(`(${mainWorldScript}());`)
+      webFrame.executeJavaScript(
+        `(${mainWorldScript})(${JSON.stringify(API_CONSTANTS)}, ${JSON.stringify(API_SCHEMA)});`,
+      )
     }
   } catch (error) {
     console.error(`injectExtensionAPIs error (${location.href})`)
