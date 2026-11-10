@@ -12,6 +12,7 @@ import {
   ResizeType,
 } from './common'
 import debug from 'debug'
+import { noteInvocation, tabForExtension } from '../invocation'
 
 const d = debug('electron-chrome-extensions:browserAction')
 
@@ -233,10 +234,19 @@ export class BrowserActionAPI {
   private observers: Set<Electron.WebContents> = new Set()
   private queuedUpdate: boolean = false
 
+  /** When declarativeContent last changed an action on a tab, so the toolbar refetches its icon. */
+  private declarativeChangedAt = new Map<string, number>()
+
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
     // The action needs no permission, only its manifest key.
     const opts = { permission: null }
+
+    // declarativeContent changed what the action shows on a tab.
+    this.ctx.store.on('declarative-action-changed', (extensionId: string, tabId: number) => {
+      this.declarativeChangedAt.set(`${extensionId}:${tabId}`, Date.now())
+      this.onUpdate()
+    })
 
     const TAB_DETAILS = 'action.TabDetails details, optional function callback'
 
@@ -496,7 +506,15 @@ export class BrowserActionAPI {
 
           const action = this.actionMap.get(extensionId)
           if (action) {
-            iconDetails = (tabId && action.tabs[tabId]?.icon) || action.icon
+            // An icon the extension set for the tab wins; then one a
+            // declarativeContent SetIcon rule set; then its own default.
+            const declared = tabId
+              ? this.ctx.store.getDeclarativeAction(extensionId, Number(tabId))?.icon
+              : undefined
+            iconDetails =
+              (tabId && action.tabs[tabId]?.icon) ||
+              (declared ? ({ imageData: declared } as unknown as chrome.browserAction.TabIconDetails) : undefined) ||
+              action.icon
           }
 
           let iconImage
@@ -575,7 +593,11 @@ export class BrowserActionAPI {
   private isEnabledForTab(extensionId: string, tabId: number) {
     const action = this.getAction(extensionId)
     const tabValue = action.tabs[tabId]?.enabled
-    return (tabValue !== undefined ? tabValue : action.enabled) !== false
+    if (tabValue !== undefined) return tabValue !== false
+    // A declarativeContent ShowAction rule enables it on matching pages, even
+    // after action.disable(), as in Chrome.
+    if (this.ctx.store.getDeclarativeAction(extensionId, tabId)?.show) return true
+    return action.enabled !== false
   }
 
   private isOnToolbar(extension: Electron.Extension) {
@@ -751,6 +773,13 @@ export class BrowserActionAPI {
       const { tabs, ...rest } = details
       const tabsInfo: { [key: string]: any } = {}
       for (const tabId of Object.keys(tabs)) tabsInfo[tabId] = forUi(tabs[tabId])
+      for (const tab of this.ctx.store.tabs) {
+        if (tab.isDestroyed() || !this.ctx.store.getDeclarativeAction(id, tab.id)) continue
+        const info = (tabsInfo[tab.id] = tabsInfo[tab.id] || {})
+        if (info.enabled === undefined) info.enabled = this.isEnabledForTab(id, tab.id)
+        const changed = this.declarativeChangedAt.get(`${id}:${tab.id}`)
+        if (changed && !(info.iconModified >= changed)) info.iconModified = changed
+      }
       const info = forUi(rest)
       if (!info.title) info.title = sessionExtensions.getExtension(id)?.name ?? ''
       return { id, tabs: tabsInfo, ...info }
@@ -805,6 +834,7 @@ export class BrowserActionAPI {
     const activationWin = this.ctx.store.tabToWindow.get(tab)
     if (activationWin && !activationWin.isDestroyed()) {
       this.ctx.store.setActivationContext(extensionId, activationWin.id, tab.id)
+      noteInvocation(this.ctx, extensionId, tab)
       d(`activation context set [extensionId: '${extensionId}', windowId: ${activationWin.id}, tabId: ${tab.id}]`)
     }
 
@@ -837,7 +867,7 @@ export class BrowserActionAPI {
     } else {
       d(`dispatching onClicked for ${extensionId}`)
 
-      const tabDetails = this.ctx.store.tabDetailsCache.get(tab.id)
+      const tabDetails = tabForExtension(this.ctx, extensionId, this.ctx.store.tabDetailsCache.get(tab.id))
       this.ctx.router.sendEvent(extensionId, 'browserAction.onClicked', tabDetails)
     }
   }
@@ -948,8 +978,9 @@ export class BrowserActionAPI {
   triggerClicked(extensionId: string, tabDetails?: Partial<chrome.tabs.Tab>) {
     const details = tabDetails ?? { id: 0, windowId: 0, url: '', active: true }
     d(`triggerClicked for ${extensionId}`)
-    this.ctx.store.noteUserGesture(extensionId)
-    this.ctx.router.sendEvent(extensionId, 'browserAction.onClicked', details)
+    const tab = typeof details.id === 'number' ? this.ctx.store.getTabById(details.id) : undefined
+    noteInvocation(this.ctx, extensionId, tab)
+    this.ctx.router.sendEvent(extensionId, 'browserAction.onClicked', tabForExtension(this.ctx, extensionId, details))
   }
 
   private onUpdate() {

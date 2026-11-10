@@ -4,6 +4,7 @@ import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import { tryParseMatchPattern } from '../match-pattern'
 import { ContextMenuType, getIconImage, matchesPattern } from './common'
+import { noteInvocation, tabForExtension } from '../invocation'
 
 type ContextItemProps = Omit<chrome.contextMenus.CreateProperties, 'id' | 'parentId'> & {
   id: string | number
@@ -518,7 +519,7 @@ export class ContextMenusAPI {
       data.checked = props.checked === true
     }
 
-    this.ctx.store.noteUserGesture(extensionId)
-    this.ctx.router.sendEvent(extensionId, 'contextMenus.onClicked', data, tab)
+    noteInvocation(this.ctx, extensionId, webContents)
+    this.ctx.router.sendEvent(extensionId, 'contextMenus.onClicked', data, tabForExtension(this.ctx, extensionId, tab))
   }
 }

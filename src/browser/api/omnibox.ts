@@ -1,6 +1,7 @@
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import { ArgSpec, checkArgs } from './lib/arg-spec'
+import { noteInvocation } from '../invocation'
 
 export type OmniboxStyleType = 'url' | 'match' | 'dim'
 
@@ -599,8 +600,8 @@ export class OmniboxAPI {
     if (typeof text !== 'string') throw new TypeError('text must be a string')
     if (!DISPOSITIONS.includes(disposition)) throw new TypeError(`Unknown disposition: ${disposition}`)
     this.settle(extensionId, [])
-    // Pressing Enter is a user gesture for the extension, as in Chrome.
-    this.ctx.store.noteUserGesture(extensionId)
+    // Pressing Enter invokes the extension on the current tab, as in Chrome.
+    noteInvocation(this.ctx, extensionId, this.ctx.store.getActiveTabOfCurrentWindow?.())
     this.send(extensionId, 'omnibox.onInputEntered', [text, disposition])
   }
 

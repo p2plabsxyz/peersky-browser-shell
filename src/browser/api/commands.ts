@@ -1,5 +1,6 @@
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
+import { noteInvocation, tabForExtension } from '../invocation'
 
 type ManifestCommand = {
   description?: unknown
@@ -128,8 +129,8 @@ export class CommandsAPI {
     if (!commands?.some((c) => c.name === name)) return false
     const active = this.ctx.store.getActiveTabOfCurrentWindow()
     const tab = active ? this.ctx.store.tabDetailsCache.get(active.id) : undefined
-    this.ctx.store.noteUserGesture(extensionId)
-    this.ctx.router.sendEvent(extensionId, 'commands.onCommand', name, tab)
+    noteInvocation(this.ctx, extensionId, active)
+    this.ctx.router.sendEvent(extensionId, 'commands.onCommand', name, tabForExtension(this.ctx, extensionId, tab))
     return true
   }
 }
