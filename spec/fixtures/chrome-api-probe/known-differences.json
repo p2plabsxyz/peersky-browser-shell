@@ -1,10 +1,6 @@
 {
   "differences": [
     {
-      "path": "probe.userScripts.*",
-      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
-    },
-    {
       "path": "probe.extension.isAllowedFileSchemeAccess.ok",
       "reason": "Electron gives an extension file access only when the host loads it with allowFileAccess, which the shell cannot read back, so it answers false unless the host's isFileSchemeAccessAllowed hook says yes, where Chrome lets an unpacked extension read files."
     },
@@ -95,14 +91,6 @@
     {
       "path": "pages.peer.tabs.unsplit",
       "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
-    },
-    {
-      "path": "probe.surface.chrome.userScripts.*",
-      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
-    },
-    {
-      "path": "pages.probe.userScripts.*",
-      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
     }
   ]
 }

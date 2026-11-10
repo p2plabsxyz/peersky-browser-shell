@@ -11,6 +11,8 @@ import { ContextMenusAPI } from '../src/browser/api/context-menus'
 import { ManagementAPI, permissionWarnings } from '../src/browser/api/management'
 import { NotificationsAPI } from '../src/browser/api/notifications'
 import { chromeJsonBytes, StorageSyncAPI } from '../src/browser/api/storage-sync'
+import { writeStorageFile } from '../src/browser/api/storage-file'
+import { app, safeStorage } from 'electron'
 import { ExtensionStateStore } from '../src/browser/state-store'
 
 // The platform APIs (storage, alarms, management, ...) with a fake context:
@@ -100,33 +102,30 @@ describe('platform APIs', () => {
   describe('chrome.storage', () => {
     const ext = fakeExtension('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', { permissions: ['storage'] })
 
-    it('keeps local and sync for the next run of the app, in the session folder', async () => {
+    it('keeps sync for the next run of the app, in the session folder', async () => {
       const first = createContext({ storagePath: temp, extensions: [ext] })
       new StorageSyncAPI(first.ctx)
-      await first.call('storage.local.set', ext, { a: 1, nested: { b: [1, 2] } })
-      await first.call('storage.sync.set', { ...ext }, { s: 'x' })
+      await first.call('storage.sync.set', { ...ext }, { s: 'x', nested: { b: [1, 2] } })
 
       const second = createContext({ storagePath: temp, extensions: [ext] })
       new StorageSyncAPI(second.ctx)
-      expect(await second.call('storage.local.get', ext, null)).to.deep.equal({ a: 1, nested: { b: [1, 2] } })
-      expect(await second.call('storage.sync.get', ext, 's')).to.deep.equal({ s: 'x' })
-      const files = await fs.readdir(path.join(temp, 'extension-local'))
-      expect(files).to.deep.equal([`${ext.id}.json`])
+      expect(await second.call('storage.sync.get', ext, null)).to.deep.equal({ s: 'x', nested: { b: [1, 2] } })
+      expect(await fs.readdir(path.join(temp, 'extension-sync'))).to.deep.equal([`${ext.id}.json`])
     })
 
     it('writes nothing to disk for a session without a folder', async () => {
       const { ctx, call } = createContext({ extensions: [ext] })
       new StorageSyncAPI(ctx)
-      await call('storage.local.set', ext, { a: 1 })
-      expect(await call('storage.local.get', ext, 'a')).to.deep.equal({ a: 1 })
+      await call('storage.sync.set', ext, { a: 1 })
+      expect(await call('storage.sync.get', ext, 'a')).to.deep.equal({ a: 1 })
       expect(await fs.readdir(temp)).to.deep.equal([])
     })
 
     it('stores keys such as __proto__ as data, without reaching a prototype', async () => {
       const { ctx, call } = createContext({ storagePath: temp, extensions: [ext] })
       new StorageSyncAPI(ctx)
-      await call('storage.local.set', ext, JSON.parse('{"__proto__": {"polluted": true}, "constructor": 2}'))
-      const all: any = await call('storage.local.get', ext, null)
+      await call('storage.sync.set', ext, JSON.parse('{"__proto__": {"polluted": true}, "constructor": 2}'))
+      const all: any = await call('storage.sync.get', ext, null)
       expect(Object.keys(all)).to.deep.equal(['__proto__', 'constructor'])
       expect(all.polluted).to.equal(undefined)
       expect(({} as any).polluted).to.equal(undefined)
@@ -160,15 +159,6 @@ describe('platform APIs', () => {
       await call('storage.sync.remove', ext, 'n')
     })
 
-    it('holds local to 10 MB unless the extension has unlimitedStorage', async () => {
-      const unlimited = fakeExtension('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', { permissions: ['storage', 'unlimitedStorage'] })
-      const { ctx, call } = createContext({ extensions: [ext, unlimited] })
-      new StorageSyncAPI(ctx)
-      const huge = { huge: 'x'.repeat(10 * 1024 * 1024) }
-      expect(await errorOf(call('storage.local.set', ext, huge))).to.equal('Resource::kQuotaBytes quota exceeded')
-      await call('storage.local.set', unlimited, huge)
-    })
-
     it('counts bytes as Chrome does', () => {
       expect(chromeJsonBytes('ü<')).to.equal(10)
       expect(chromeJsonBytes(3000000000)).to.equal(12)
@@ -179,14 +169,14 @@ describe('platform APIs', () => {
     it('fires onChanged only for real changes, with the area', async () => {
       const { ctx, call, events } = createContext({ extensions: [ext] })
       new StorageSyncAPI(ctx)
-      await call('storage.local.set', ext, { same: 1 })
-      await call('storage.local.set', ext, { same: 1 })
-      await call('storage.local.remove', ext, 'missing')
-      await call('storage.local.clear', ext)
-      await call('storage.local.clear', ext)
+      await call('storage.sync.set', ext, { same: 1 })
+      await call('storage.sync.set', ext, { same: 1 })
+      await call('storage.sync.remove', ext, 'missing')
+      await call('storage.sync.clear', ext)
+      await call('storage.sync.clear', ext)
       expect(events.map((e) => [e.name, e.args])).to.deep.equal([
-        ['storage.onChanged', [{ same: { newValue: 1 } }, 'local']],
-        ['storage.onChanged', [{ same: { oldValue: 1 } }, 'local']],
+        ['storage.onChanged', [{ same: { newValue: 1 } }, 'sync']],
+        ['storage.onChanged', [{ same: { oldValue: 1 } }, 'sync']],
       ])
     })
 
@@ -202,13 +192,69 @@ describe('platform APIs', () => {
       }
     })
 
-    it('deletes an extension storage file when it is uninstalled', async () => {
+    it('deletes an extension storage, its own and Electron\'s local, when it is uninstalled', async () => {
       const { ctx, call } = createContext({ storagePath: temp, extensions: [ext] })
       new StorageSyncAPI(ctx)
-      await call('storage.local.set', ext, { a: 1 })
+      await call('storage.sync.set', ext, { a: 1 })
+      const native = path.join(temp, 'Local Extension Settings', ext.id)
+      await fs.mkdir(native, { recursive: true })
+      await fs.writeFile(path.join(native, 'LOG'), 'x')
       ctx.store.emit('extension-uninstalled', ext.id)
-      await call('storage.local.getKeys', ext)
-      expect(await fs.readdir(path.join(temp, 'extension-local'))).to.deep.equal([])
+      await call('storage.sync.getKeys', ext)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(await fs.readdir(path.join(temp, 'extension-sync'))).to.deep.equal([])
+      expect(await fs.readdir(path.join(temp, 'Local Extension Settings'))).to.deep.equal([])
+    })
+
+    describe('local, moved from 1.x', () => {
+      // 1.x kept chrome.storage.local in its own encrypted file under userData.
+      const legacyFile = () => path.join(app.getPath('userData'), 'extension-local', `${ext.id}.json`)
+      const writeLegacy = async (data: any) => {
+        await fs.mkdir(path.dirname(legacyFile()), { recursive: true })
+        await writeStorageFile(legacyFile(), data, safeStorage)
+      }
+      afterEach(async () => {
+        await fs.rm(legacyFile(), { force: true })
+      })
+
+      it('hands the old data over once, and deletes the file only after it is written', async () => {
+        await writeLegacy({ theme: 'dark', list: [1, 2] })
+        const { ctx, call } = createContext({ storagePath: temp, extensions: [ext], stateDir: temp })
+        new StorageSyncAPI(ctx)
+        const answer: any = await call('storage.local.migrate', ext)
+        expect(answer.data).to.deep.equal({ theme: 'dark', list: [1, 2] })
+        expect(answer.keepNewer).to.equal(false)
+        // Another context asks while the first is writing it.
+        expect(await call('storage.local.migrate', ext)).to.deep.equal({ wait: true })
+        // The file is still there until the first context says it is written.
+        await fs.access(legacyFile())
+        expect(await call('storage.local.migrated', ext, 'not the token')).to.equal(false)
+        await fs.access(legacyFile())
+        expect(await call('storage.local.migrated', ext, answer.token)).to.equal(true)
+        await expect(fs.access(legacyFile())).to.be.rejected
+        expect(await call('storage.local.migrate', ext)).to.deep.equal({ done: true })
+      })
+
+      it('keeps the file when the move never finishes, and keeps newer values on the next try', async () => {
+        await writeLegacy({ theme: 'dark' })
+        const first = createContext({ storagePath: temp, extensions: [ext], stateDir: temp })
+        new StorageSyncAPI(first.ctx)
+        const answer: any = await first.call('storage.local.migrate', ext)
+        expect(answer.keepNewer).to.equal(false)
+        await first.ctx.stateStore.flush()
+        // The app quit before the context wrote it: the next run tries again.
+        const second = createContext({ storagePath: temp, extensions: [ext], stateDir: temp })
+        new StorageSyncAPI(second.ctx)
+        const again: any = await second.call('storage.local.migrate', ext)
+        expect(again.data).to.deep.equal({ theme: 'dark' })
+        expect(again.keepNewer).to.equal(true)
+      })
+
+      it('has nothing to move for an extension 1.x never stored for', async () => {
+        const { ctx, call } = createContext({ storagePath: temp, extensions: [ext], stateDir: temp })
+        new StorageSyncAPI(ctx)
+        expect(await call('storage.local.migrate', ext)).to.deep.equal({ done: true })
+      })
     })
   })
 

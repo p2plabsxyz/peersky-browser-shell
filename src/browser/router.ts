@@ -135,6 +135,7 @@ interface RoutingDelegateObserver {
   ): Promise<void>
   addListener(listener: EventListener, extensionId: string, eventName: string, senderUrl?: string): void
   removeListener(listener: EventListener, extensionId: string, eventName: string, senderUrl?: string): void
+  contextInfo(event: IpcEvent): Record<string, unknown>
 }
 
 let gRoutingDelegate: RoutingDelegate
@@ -156,6 +157,24 @@ class RoutingDelegate {
     ipcMain.handle('crx-msg-remote', this.onRemoteMessage)
     ipcMain.on('crx-add-listener', this.onAddListener)
     ipcMain.on('crx-remove-listener', this.onRemoveListener)
+    ipcMain.on('crx-context-info', this.onContextInfo)
+  }
+
+  /**
+   * The preload asks, synchronously while a page or worker starts, what kind
+   * of context it is (an offscreen document, whether userScripts is allowed),
+   * since Chrome gives some contexts fewer APIs. A sync call must always get
+   * an answer, so every path sets one.
+   */
+  private onContextInfo = (event: IpcEvent) => {
+    let info: Record<string, unknown> = {}
+    try {
+      const observer = this.sessionMap.get(getSessionFromEvent(event))
+      info = observer?.contextInfo(event) ?? {}
+    } catch (error) {
+      d('context info failed: %o', error)
+    }
+    event.returnValue = info
   }
 
   addObserver(observer: RoutingDelegateObserver) {
@@ -180,6 +199,7 @@ class RoutingDelegate {
         serviceWorker.ipc.handle('crx-msg-remote', this.onRemoteMessage)
         serviceWorker.ipc.on('crx-add-listener', this.onAddListener)
         serviceWorker.ipc.on('crx-remove-listener', this.onRemoveListener)
+        serviceWorker.ipc.on('crx-context-info', this.onContextInfo)
       }
     }
     observer.session.serviceWorkers.on('running-status-changed', maybeListenForWorkerEvents)
@@ -717,6 +737,39 @@ export class ExtensionRouter {
     }
 
     return handler
+  }
+
+  private contextInfoProviders: Array<
+    (extension: Electron.Extension, event: IpcEvent) => Record<string, unknown> | undefined
+  > = []
+
+  /** Adds to what a starting page or worker is told about its context. */
+  addContextInfoProvider(
+    provider: (extension: Electron.Extension, event: IpcEvent) => Record<string, unknown> | undefined,
+  ) {
+    this.contextInfoProviders.push(provider)
+  }
+
+  contextInfo(event: IpcEvent): Record<string, unknown> {
+    const from = eventSenderUrl(event)
+    if (!from || !from.startsWith('chrome-extension://')) return {}
+    let extensionId: string
+    try {
+      extensionId = new URL(from).hostname
+    } catch {
+      return {}
+    }
+    const extension = (this.session.extensions || this.session).getExtension(extensionId)
+    if (!extension) return {}
+    const info: Record<string, unknown> = {}
+    for (const provider of this.contextInfoProviders) {
+      try {
+        Object.assign(info, provider(extension, event) ?? {})
+      } catch (error) {
+        d('context info provider failed: %o', error)
+      }
+    }
+    return info
   }
 
   /** The session's permissions, which every handler call is checked against. */

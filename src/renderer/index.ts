@@ -141,7 +141,7 @@ export const injectExtensionAPIs = () => {
   function mainWorldScript(
     constants: Record<string, any>,
     schema: Record<string, any>,
-    context: { offscreen?: boolean } = {},
+    context: { offscreen?: boolean; userScripts?: boolean } = {},
   ) {
     // Use context bridge API or closure variable when context isolation is disabled.
     const electron = ((globalThis as any).electron as typeof electronContext) || electronContext
@@ -1313,6 +1313,8 @@ export const injectExtensionAPIs = () => {
 
       userScripts: {
         permission: 'userScripts',
+        // Only once the person allowed it for this extension, as in Chrome.
+        shouldInject: () => context.userScripts === true,
         factory: () => ({
           getScripts: invokeExtension('userScripts.getScripts'),
           register: invokeExtension('userScripts.register'),
@@ -1932,9 +1934,10 @@ export const injectExtensionAPIs = () => {
       storage: {
         permission: 'storage',
         factory: (base) => {
-          // local, sync and managed are the shell's; session is Electron's own,
-          // which is Chrome's code and is shared with content scripts. They
-          // check their arguments the same way, here, before any call is made.
+          // sync and managed are the shell's; local and session are Electron's
+          // own, which is Chrome's code and is shared with content scripts, as
+          // in Chrome. The shell's areas check their arguments the same way,
+          // here, before any call is made.
           const SIG: Record<string, string> = {
             get: 'get(optional [string|array|object] keys, optional function callback)',
             getKeys: 'getKeys(optional function callback)',
@@ -2147,8 +2150,59 @@ export const injectExtensionAPIs = () => {
             }
           }
 
-          const local = makeArea('local')
-          local.onChanged = makeEvent('local')
+          // What 1.x kept in the shell's own local store moves into Electron's
+          // once, before this context reads or writes local. The main process
+          // hands it to one context at a time and deletes the old file only
+          // after that context says it is written.
+          const nativeLocal = (base as any)?.local
+          let localMoved = !nativeLocal
+          const localReady: Promise<void> = (async () => {
+            if (!nativeLocal) return
+            const migrate = invokeExtension('storage.local.migrate')
+            for (let attempt = 0; attempt < 100; attempt++) {
+              const answer: any = await migrate()
+              if (!answer || answer.done) return
+              if (answer.wait) {
+                await new Promise((resolve) => setTimeout(resolve, 100))
+                continue
+              }
+              const old: Record<string, unknown> = answer.data || {}
+              let items = old
+              if (answer.keepNewer) {
+                // A try before this one may have been cut short after the
+                // extension wrote newer values: those stay.
+                const present = await nativeLocal.get(Object.keys(old))
+                items = {}
+                for (const key of Object.keys(old)) if (!(key in present)) items[key] = old[key]
+              }
+              if (Object.keys(items).length) await nativeLocal.set(items)
+              await invokeExtension('storage.local.migrated')(answer.token)
+              return
+            }
+          })()
+            .catch(() => {})
+            .finally(() => {
+              localMoved = true
+            })
+
+          let local: any
+          if (nativeLocal) {
+            local = {}
+            for (const key of ['get', 'getKeys', 'set', 'remove', 'clear', 'getBytesInUse', 'setAccessLevel']) {
+              if (typeof nativeLocal[key] !== 'function') continue
+              const call = nativeLocal[key].bind(nativeLocal)
+              local[key] = (...args: any[]) => {
+                if (localMoved) return call(...args)
+                const callback = typeof args[args.length - 1] === 'function'
+                const pending = localReady.then(() => call(...args))
+                if (!callback) return pending
+                pending.catch(() => {})
+                return undefined
+              }
+            }
+            for (const key of ['QUOTA_BYTES']) if (key in nativeLocal) local[key] = nativeLocal[key]
+            local.onChanged = makeEvent('local')
+          }
           const sync = makeArea('sync')
           sync.onChanged = makeEvent('sync')
           const managed = makeArea('managed', true)
@@ -2629,12 +2683,13 @@ export const injectExtensionAPIs = () => {
   // Which kind of extension page this is, which only the main process knows:
   // an offscreen document gets a smaller chrome object. Asked once, while the
   // page loads, before any of its scripts run.
-  let context: { offscreen?: boolean } = {}
-  if (process.type !== 'service-worker') {
-    try {
-      context = ipcRenderer.sendSync('crx-context-info') || {}
-    } catch {}
-  }
+  // What kind of context this is, asked once while it starts: an offscreen
+  // document gets a smaller chrome object, and userScripts only shows when
+  // the person allowed it.
+  let context: { offscreen?: boolean; userScripts?: boolean } = {}
+  try {
+    context = ipcRenderer.sendSync('crx-context-info') || {}
+  } catch {}
 
   if (!process.contextIsolated) {
     console.warn(`injectExtensionAPIs: context isolation disabled in ${location.href}`)

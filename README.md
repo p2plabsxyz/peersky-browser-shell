@@ -359,7 +359,7 @@ An API shows up only for an extension that asks for its permission, as in Chrome
 | `chrome.extension`, `chrome.runtime` | `onInstalled`, `onStartup`, `onExtensionLoaded` and `onEnabled` fire as in Chrome. |
 | `chrome.fontSettings` | Kept per session. Pass `getFontWebPreferences()` to new tabs. |
 | `chrome.history`, `chrome.topSites` | Visits are recorded only while an extension with `history` or `topSites` is loaded. Call `clearHistory()` from the host's own "clear history". |
-| `chrome.i18n`, `chrome.idle`, `chrome.power`, `chrome.storage` | `chrome.storage.managed` reads the `getManagedStorage` hook. |
+| `chrome.i18n`, `chrome.idle`, `chrome.power`, `chrome.storage` | `local` and `session` are Electron's own stores, shared with content scripts as in Chrome; `sync` is the shell's, encrypted with `safeStorage`; `managed` reads the `getManagedStorage` hook. |
 | `chrome.identity` | `launchWebAuthFlow`; no Google account sign-in. |
 | `chrome.management` | `setExtensionEnabled`, `confirmUninstall` and `uninstallExtension` hooks. |
 | `chrome.notifications` | Shown with Electron's `Notification`. |
@@ -370,7 +370,7 @@ An API shows up only for an extension that asks for its permission, as in Chrome
 | `chrome.privacy` | Kept per session. Read the rest with `getPrivacySettings()`. |
 | `chrome.proxy` | Applied with `session.setProxy`. |
 | `chrome.readingList`, `chrome.search` | `getSearchUrl` hook for the host's search engine. |
-| `chrome.scripting`, `chrome.userScripts` | `isUserScriptsAllowed` hook. |
+| `chrome.scripting`, `chrome.userScripts` | userScripts is off until the host's `isUserScriptsAllowed` hook allows it for the extension, as Chrome's "Allow User Scripts" switch does; while off, `chrome.userScripts` is not there. |
 | `chrome.sessions` | Tabs and windows closed in this run. |
 | `chrome.sidePanel` | `openSidePanel` and `closeSidePanel` hooks. |
 | `chrome.system.cpu`, `.memory`, `.display`, `.storage` | |
@@ -410,7 +410,7 @@ The workflow `.github/workflows/peersky-chrome-extensions.yml` runs `yarn instal
 ### `@p2plabs/peersky-chrome-extensions`
 
 - Electron 43 or later (`peerDependencies.electron` is `>=43.0.0`), which is what the tests run on.
-- Content scripts run on Electron's own bindings, which the shell cannot add to: `chrome.storage.local` there is Electron's store, and `chrome.storage.sync` is not available in them.
+- Content scripts run on Electron's own bindings, which the shell cannot add to: `chrome.storage.sync` is not available in them.
 
 ### electron
 

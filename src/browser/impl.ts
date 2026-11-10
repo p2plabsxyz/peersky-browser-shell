@@ -87,7 +87,9 @@ export interface ChromeExtensionImpl {
   /**
    * Whether the person allowed the extension to run user scripts, as
    * Chrome's per-extension "Allow User Scripts" switch does. Without this
-   * hook every extension that asks for the userScripts permission may.
+   * hook no extension may, as in Chrome before the person turns it on, and
+   * chrome.userScripts is not there. An extension sees a change when it next
+   * loads.
    */
   isUserScriptsAllowed?(extension: Electron.Extension): boolean
 

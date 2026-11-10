@@ -17,7 +17,9 @@ Extensions now behave as in Chrome 157. Two test extensions were run in Chrome f
 - An API is there only for an extension that asks for its permission, and the main process checks every call and every event listener against the permissions the extension holds.
 - A tab's url, title and favicon reach an extension only with `tabs`, host access to the page or activeTab. `tabs.captureVisibleTab` needs `<all_urls>` or activeTab and gives JPEG by default.
 - `permissions.request` needs a user gesture and asks the person (the `requestPermissions` hook, or a system dialog); it used to grant everything without asking.
-- Extension state and `chrome.storage` live in the session's own folder. 1.x data under userData is read once.
+- Extension state and `chrome.storage.sync` live in the session's own folder; 1.x data under userData is read once.
+- `chrome.storage.local` is Electron's own store, shared by an extension's pages, worker and content scripts as in Chrome, and no longer encrypted at rest (Chrome does not encrypt it either). What 1.x kept is moved there once, before the extension's first call, and the old encrypted file is deleted only after the move is written.
+- `chrome.userScripts` is off until the host's `isUserScriptsAllowed` hook allows it for the extension, as Chrome's "Allow User Scripts" switch does.
 - `ChromeExtensionImpl.createWindow` may return the window or `[webContents, window]`.
 - Electron 43 or later.
 

@@ -29,6 +29,7 @@ const extension = (id: string, manifest: any, dir = os.tmpdir()): Ext => ({
 function makeCtx(opts: { extensions?: Ext[]; state?: Record<string, unknown>; impl?: any; cookies?: any } = {}) {
   const handlers = new Map<string, Function>()
   const events: { extensionId: string | undefined; name: string; args: any[] }[] = []
+  const contextInfoProviders: Function[] = []
   const state = opts.state ?? {}
   const extensions = new Map((opts.extensions ?? []).map((e) => [e.id, e]))
   const sessionExtensions: any = new EventEmitter()
@@ -63,6 +64,7 @@ function makeCtx(opts: { extensions?: Ext[]; state?: Record<string, unknown>; im
   })
   const router = {
     apiHandler: () => (name: string, fn: Function) => handlers.set(name, fn),
+    addContextInfoProvider: (provider: Function) => contextInfoProviders.push(provider),
     sendEvent: (extensionId: string | undefined, name: string, ...args: any[]) => events.push({ extensionId, name, args }),
     broadcastEvent: (name: string, ...args: any[]) => events.push({ extensionId: undefined, name, args }),
     hasListener: () => false,
@@ -70,7 +72,7 @@ function makeCtx(opts: { extensions?: Ext[]; state?: Record<string, unknown>; im
   const ctx: any = { router, session, store, stateStore, permissions }
   const call = (name: string, ext: Ext, ...args: any[]) =>
     Promise.resolve().then(() => handlers.get(name)!({ extension: ext, type: 'service-worker', sender: { scope: `chrome-extension://${ext.id}/` } }, ...args))
-  return { ctx, handlers, events, state, call }
+  return { ctx, handlers, events, state, call, contextInfoProviders }
 }
 
 describe('network and page APIs', () => {
@@ -483,9 +485,11 @@ describe('network and page APIs', () => {
     after(() => fs.rmSync(dir, { recursive: true, force: true }))
     const manager = () => extension('script-manager', { permissions: ['userScripts'] }, dir)
 
+    const allowed = { isUserScriptsAllowed: () => true }
+
     it('checks scripts as Chrome does and keeps them across a restart', async () => {
       const state: Record<string, unknown> = {}
-      const h = makeCtx({ extensions: [manager()], state })
+      const h = makeCtx({ extensions: [manager()], state, impl: allowed })
       new UserScriptsAPI(h.ctx)
       const register = (scripts: any[]) => h.call('userScripts.register', manager(), scripts)
       await expect(register([{ id: '_x', matches: ['https://a.example/*'], js: [{ code: '1' }] }])).to.be.rejectedWith(
@@ -509,7 +513,7 @@ describe('network and page APIs', () => {
       )
       await h.call('userScripts.configureWorld', manager(), { worldId: 'w', messaging: true })
 
-      const again = makeCtx({ extensions: [manager()], state })
+      const again = makeCtx({ extensions: [manager()], state, impl: allowed })
       new UserScriptsAPI(again.ctx)
       expect(await again.call('userScripts.getScripts', manager())).to.deep.equal([
         { id: 'x', matches: ['https://a.example/*'], js: [{ file: 'script.js' }], runAt: 'document_idle', allFrames: false, world: 'USER_SCRIPT' },
@@ -525,6 +529,14 @@ describe('network and page APIs', () => {
       const h = makeCtx({ extensions: [manager()], impl: { isUserScriptsAllowed: () => false } })
       new UserScriptsAPI(h.ctx)
       await expect(h.call('userScripts.getScripts', manager())).to.be.rejectedWith('user scripts are not allowed')
+    })
+
+    it('is off without a host switch, as in Chrome, and tells new contexts to leave it out', async () => {
+      const h = makeCtx({ extensions: [manager()] })
+      new UserScriptsAPI(h.ctx)
+      await expect(h.call('userScripts.getScripts', manager())).to.be.rejectedWith('user scripts are not allowed')
+      const info = Object.assign({}, ...h.contextInfoProviders.map((p) => p(manager(), { type: 'service-worker' })))
+      expect(info.userScripts).to.equal(false)
     })
   })
 })

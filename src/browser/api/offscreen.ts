@@ -51,15 +51,6 @@ const invocationError = (detail: string) => new Error(`Error in invocation of ${
  * an offscreen document a smaller chrome object than other extension pages.
  */
 const offscreenContents = new Set<number>()
-let contextInfoHandler = false
-const listenForContextInfo = () => {
-  if (contextInfoHandler) return
-  contextInfoHandler = true
-  ipcMain.on('crx-context-info', (event) => {
-    const isMainFrame = event.senderFrame === event.sender.mainFrame
-    event.returnValue = { offscreen: isMainFrame && offscreenContents.has(event.sender.id) }
-  })
-}
 
 const gone = (doc: OffscreenDocument) => doc.view.webContents.isDestroyed()
 const close = (doc: OffscreenDocument) => {
@@ -83,7 +74,14 @@ export class OffscreenAPI {
   private documents = new Map<string, OffscreenDocument>()
 
   constructor(private ctx: ExtensionContext) {
-    listenForContextInfo()
+    // A page asks while it loads whether it is an offscreen document, which
+    // Chrome gives chrome.runtime only.
+    this.ctx.router.addContextInfoProvider((_extension, event) => {
+      if (event.type !== 'frame') return undefined
+      const frameEvent = event as Electron.IpcMainEvent
+      const isMainFrame = frameEvent.senderFrame === frameEvent.sender.mainFrame
+      return { offscreen: isMainFrame && offscreenContents.has(frameEvent.sender.id) }
+    })
     const handle = this.ctx.router.apiHandler()
     handle('offscreen.createDocument', this.createDocument, { permission: 'offscreen' })
     handle('offscreen.closeDocument', this.closeDocument, { permission: 'offscreen' })

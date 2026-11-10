@@ -8,9 +8,10 @@ import { TabContents, resolveExtensionPath } from './common'
  * chrome.userScripts
  *
  * Chrome offers this API only once the person turns on "Allow User Scripts"
- * for the extension. PeerSky asks the host (impl.isUserScriptsAllowed) and
- * allows it when the host has no such switch, since people rely on user
- * script managers.
+ * for the extension, since it runs any code the extension hands it. The shell
+ * asks the host (impl.isUserScriptsAllowed); without that hook it is off, as
+ * in Chrome. While it is off, chrome.userScripts is not there, and scripts an
+ * extension registered before do not run.
  *
  * Registered scripts are kept across restarts, as in Chrome, and run in
  * pages the extension has host access to: in the page's world (MAIN), or in
@@ -85,6 +86,10 @@ export class UserScriptsAPI {
   private ready: Promise<void>
 
   constructor(private ctx: ExtensionContext) {
+    // A starting page or worker learns whether to show chrome.userScripts.
+    this.ctx.router.addContextInfoProvider((extension) => ({
+      userScripts: this.ctx.permissions.has(extension, 'userScripts') && this.allowed(extension),
+    }))
     const handle = this.ctx.router.apiHandler()
     handle('userScripts.getScripts', this.gate(this.getScripts))
     handle('userScripts.register', this.gate(this.register))
@@ -124,7 +129,7 @@ export class UserScriptsAPI {
 
   private allowed(extension: Electron.Extension) {
     const hook = this.ctx.store.impl?.isUserScriptsAllowed
-    if (typeof hook !== 'function') return true
+    if (typeof hook !== 'function') return false
     try {
       return hook(extension) === true
     } catch {

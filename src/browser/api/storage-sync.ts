@@ -1,4 +1,5 @@
 import { app, safeStorage } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ExtensionContext } from '../context'
@@ -24,6 +25,13 @@ interface AreaLimits {
   writesPerMinute?: number
   writesPerHour?: number
 }
+
+/** Extensions whose 1.x local storage was moved into Electron's own store. */
+const LOCAL_MOVED_NS = 'storage.local.moved'
+/** Extensions whose 1.x local data was handed out once already. */
+const LOCAL_TRIED_NS = 'storage.local.tried'
+
+const EXTENSION_ID = /^[a-p]{32}$/
 
 const LIMITS: Record<Area, AreaLimits> = {
   sync: { quotaBytes: 102400, quotaBytesPerItem: 8192, maxItems: 512, writesPerMinute: 120, writesPerHour: 1800 },
@@ -175,7 +183,14 @@ export class StorageSyncAPI {
 
     const handle = this.ctx.router.apiHandler()
     const opts = { permission: 'storage' }
-    for (const area of ['local', 'sync'] as Area[]) {
+    // chrome.storage.local is Electron's own store, the one content scripts
+    // use too, so every part of an extension sees the same data, as in
+    // Chrome. What 1.x kept for it in the shell's encrypted file is handed to
+    // the extension's first context once, which writes it there.
+    handle('storage.local.migrate', this.migrateLocal, opts)
+    handle('storage.local.migrated', this.migratedLocal, opts)
+
+    for (const area of ['sync'] as Area[]) {
       handle(`storage.${area}.get`, (event: ExtensionEvent, keys?: unknown) => this.get(area, event, keys), opts)
       handle(`storage.${area}.getKeys`, (event: ExtensionEvent) => this.getKeys(area, event), opts)
       handle(`storage.${area}.set`, (event: ExtensionEvent, items?: unknown) => this.set(area, event, items), opts)
@@ -212,6 +227,7 @@ export class StorageSyncAPI {
     })
     // Chrome deletes an extension's storage with the extension.
     this.ctx.store.on('extension-uninstalled', (extensionId: string) => {
+      void this.removeNativeLocal(extensionId)
       for (const area of ['local', 'sync'] as Area[]) {
         void this.enqueue(area, extensionId, async () => {
           this.cache[area].delete(extensionId)
@@ -221,6 +237,105 @@ export class StorageSyncAPI {
         })
       }
     })
+  }
+
+  // ---------------------------------------------------------------- local, from 1.x
+
+  /** Who is moving an extension's 1.x local data now, until when. */
+  private moving = new Map<string, { token: string; expires: number }>()
+
+  private movedLocal(): Record<string, true> {
+    return this.ctx.stateStore.getNamespace<Record<string, true>>(LOCAL_MOVED_NS, {})
+  }
+
+  /** The 1.x local files of an extension that exist: this session's and userData's. */
+  private async oldLocalFiles(extensionId: string) {
+    const files = [this.filePath('local', extensionId)]
+    if (this.dirs.local && EXTENSION_ID.test(extensionId)) {
+      files.push(path.join(this.legacyDirs.local, `${extensionId}.json`))
+    }
+    const found: string[] = []
+    for (const file of files) {
+      if (!file) continue
+      try {
+        await fs.access(file)
+        found.push(file)
+      } catch {}
+    }
+    return found
+  }
+
+  /**
+   * Hands the extension's first context what 1.x kept for it in
+   * chrome.storage.local, once. The answer is { done } when there is nothing
+   * to move, { wait } while another context is moving it, or { token, data,
+   * keepNewer }: the context writes data to Electron's store and calls
+   * storage.local.migrated with the token, and only then are the old files
+   * deleted. If it never does (the context closed, the write failed), the
+   * files stay and the next context tries again; that time a value written
+   * since wins over the old one (keepNewer).
+   */
+  private migrateLocal = async ({ extension }: ExtensionEvent) => {
+    const id = extension.id
+    await this.ctx.stateStore.whenHydrated()
+    if (this.movedLocal()[id]) return { done: true }
+    const claim = this.moving.get(id)
+    if (claim && claim.expires > Date.now()) return { wait: true }
+    const files = await this.oldLocalFiles(id)
+    if (files.length === 0) {
+      await this.finishLocalMove(id, [])
+      return { done: true }
+    }
+    const data = await this.enqueue('local', id, () => this.load('local', id))
+    const keys = Object.keys(data)
+    if (keys.length === 0) {
+      await this.finishLocalMove(id, files)
+      return { done: true }
+    }
+    const token = randomUUID()
+    const triedBefore = this.ctx.stateStore.getNamespace<Record<string, true>>(LOCAL_TRIED_NS, {})
+    const tried = !!triedBefore[id]
+    if (!tried) {
+      this.ctx.stateStore.setNamespace(LOCAL_TRIED_NS, { ...triedBefore, [id]: true })
+      await this.ctx.stateStore.flush().catch(() => {})
+    }
+    this.moving.set(id, { token, expires: Date.now() + 30_000 })
+    const plain: Data = {}
+    for (const key of keys) plain[key] = data[key]
+    return { token, data: plain, keepNewer: tried }
+  }
+
+  private migratedLocal = async ({ extension }: ExtensionEvent, token?: unknown) => {
+    const claim = this.moving.get(extension.id)
+    if (!claim || typeof token !== 'string' || claim.token !== token) return false
+    this.moving.delete(extension.id)
+    await this.finishLocalMove(extension.id, await this.oldLocalFiles(extension.id))
+    return true
+  }
+
+  private async finishLocalMove(extensionId: string, files: string[]) {
+    this.ctx.stateStore.setNamespace(LOCAL_MOVED_NS, { ...this.movedLocal(), [extensionId]: true })
+    const tried = { ...this.ctx.stateStore.getNamespace<Record<string, true>>(LOCAL_TRIED_NS, {}) }
+    if (tried[extensionId]) {
+      delete tried[extensionId]
+      this.ctx.stateStore.setNamespace(LOCAL_TRIED_NS, tried)
+    }
+    await this.ctx.stateStore.flush().catch(() => {})
+    this.cache.local.delete(extensionId)
+    this.memory.local.delete(extensionId)
+    for (const file of files) await fs.rm(file, { force: true }).catch(() => {})
+  }
+
+  /** Electron keeps chrome.storage.local in the session folder, by extension id. */
+  private async removeNativeLocal(extensionId: string) {
+    const storagePath = (this.ctx.session as any)?.storagePath as string | null | undefined
+    if (!storagePath || !EXTENSION_ID.test(extensionId)) return
+    await fs
+      .rm(path.join(storagePath, 'Local Extension Settings', extensionId), { recursive: true, force: true })
+      .catch(() => {})
+    const moved = { ...this.movedLocal() }
+    delete moved[extensionId]
+    this.ctx.stateStore.setNamespace(LOCAL_MOVED_NS, moved)
   }
 
   // ---------------------------------------------------------------- reading and writing
