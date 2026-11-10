@@ -313,13 +313,11 @@ const eventListenerEquals = (a: EventListener) => (b: EventListener) => {
 /**
  * Events where delaying SW delivery by 200ms can miss first paint / scriptlets.
  * Only speeds up delivery when a listener is already registered — never wakes idle SWs.
+ * Every webRequest event goes at once, so a listener sees a request's stages
+ * in the order Chrome gives them.
  */
 function isUrgentNavigationEvent(eventName: string) {
-  return (
-    eventName.startsWith('webNavigation.') ||
-    eventName === 'webRequest.onResponseStarted' ||
-    eventName === 'webRequest.onBeforeRedirect'
-  )
+  return eventName.startsWith('webNavigation.') || eventName.startsWith('webRequest.')
 }
 
 export class ExtensionRouter {
@@ -447,6 +445,11 @@ export class ExtensionRouter {
         this.deliverToServiceWorkerOrHost(listener, extensionId, `crx-${eventName}`, entry.args, 0)
       }
     }
+  }
+
+  /** Whether the extension has a listener for the event now, in any of its contexts. */
+  hasListener(extensionId: string, eventName: string) {
+    return !!this.listeners.get(eventName)?.some((l) => l.extensionId === extensionId)
   }
 
   /**

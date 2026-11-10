@@ -1,381 +1,464 @@
+import { promises as fs } from 'node:fs'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
-import { TabContents, matchesPattern, validateExtensionResource } from './common'
-import { promises as fs } from 'node:fs'
+import { matchesAnyPattern } from '../match-pattern'
+import { readManifestPermissions } from '../permissions'
+import { TabContents, resolveExtensionPath } from './common'
 
-const ISOLATED_WORLD = 1000
-const DYNAMIC_REGISTRY_NS = 'scripting.dynamic.registry.v1'
+/**
+ * chrome.scripting
+ *
+ * Electron runs Chromium's own chrome.scripting in extension contexts, with
+ * isolated worlds per extension in every frame, real document ids and
+ * Chrome's errors. It only knows the host permissions in the manifest,
+ * though, and nothing about browser-internal pages or the tabs this library
+ * tracks. So every call comes here first: the tab must be one of ours, and
+ * the extension must have host access to the frames as PeerSky counts it.
+ * Then the renderer hands the call to Electron.
+ *
+ * Where only PeerSky grants access (optional host permissions, activeTab),
+ * Electron refuses, and the call comes back here to be run by the main
+ * process instead: in an isolated world of the extension's own on the top
+ * frame, or in the page's world.
+ *
+ * Electron forgets registered content scripts when the browser restarts, so
+ * the ones that ask to persist are kept here and handed back to the
+ * extension's first context to register again.
+ */
+
+const CONTENT_SCRIPTS_NS = 'scripting.contentScripts'
+/** Where an earlier version of this library kept its own registry. */
+const LEGACY_REGISTRY_NS = 'scripting.dynamic.registry.v1'
+
+const MAX_TARGET_IDS = 100
+const MAX_SCRIPTS = 1000
+const MAX_FILES = 100
+const MAX_CODE_LENGTH = 10 * 1024 * 1024
+
 type RunAt = 'document_start' | 'document_end' | 'document_idle'
+type RegisteredScript = chrome.scripting.RegisteredContentScript
 
-function frameId(f: Electron.WebFrameMain) {
-  return f === f.top ? 0 : f.frameTreeNodeId
+interface Target {
+  tabId: number
+  frameIds?: number[]
+  documentIds?: string[]
+  allFrames?: boolean
 }
 
-function resolveFrame(tab: Electron.WebContents, frameIds?: number[]): Electron.WebFrameMain | null {
-  if (!('mainFrame' in tab)) return null
-  const main = (tab as Electron.WebContents & { mainFrame: Electron.WebFrameMain }).mainFrame
-  if (!main || main.isDestroyed()) return null
+const isPlainObject = (v: unknown): v is Record<string, any> =>
+  !!v && typeof v === 'object' && !Array.isArray(v)
 
-  // Missing frameId → null (don't fall back to main frame).
-  const fid = frameIds?.[0]
-  if (fid == null || fid === 0) return main
+const frameIdOf = (f: Electron.WebFrameMain) => (f === f.top ? 0 : f.frameTreeNodeId)
 
-  const hit = main.framesInSubtree.find((f) => frameId(f) === fid)
-  return hit && !hit.isDestroyed() ? hit : null
-}
-
-function resolveInjectionFrame(
-  tab: Electron.WebContents,
-  target: { frameIds?: number[]; documentIds?: string[] } | undefined,
-  resolveDocId: (documentId: string) => { tabId: number; frameId: number } | undefined,
-  expectedTabId: number,
-): Electron.WebFrameMain | null {
-  const documentIds = target?.documentIds
-  if (Array.isArray(documentIds) && typeof documentIds[0] === 'string') {
-    const resolved = resolveDocId(documentIds[0])
-    if (!resolved || resolved.tabId !== expectedTabId) return null
-    return resolveFrame(tab, [resolved.frameId])
-  }
-  return resolveFrame(tab, target?.frameIds)
+/** A world id of the extension's own for scripts the main process runs. */
+function isolatedWorldId(extensionId: string) {
+  let hash = 0
+  for (let i = 0; i < extensionId.length; i++) hash = (hash * 31 + extensionId.charCodeAt(i)) >>> 0
+  // Clear of Electron's own worlds (0, 999) and of the range Chromium hands
+  // to extensions it runs itself.
+  return 1 << 24 | hash % 100000
 }
 
 export class ScriptingAPI {
-  private registryByExtension = new Map<string, chrome.scripting.RegisteredContentScript[]>()
-  private observedTabs = new Set<number>()
-  private injectedByTab = new Map<number, Set<string>>()
-  private registryReady: Promise<void>
+  /** What each extension has registered, as Electron reports it. */
+  private registered = new Map<string, RegisteredScript[]>()
+  /** Extensions whose persisted scripts were handed back in this run. */
+  private restored = new Set<string>()
+  /** CSS the main process inserted, to remove it again: key -> Electron's key. */
+  private insertedCss = new Map<string, string>()
+  private observedTabs = new WeakSet<Electron.WebContents>()
+  private ready: Promise<void>
 
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
-    handle('scripting.insertCSS', this.insertCSS.bind(this), { permission: 'scripting' })
-    handle('scripting.executeScript', this.executeScript.bind(this), { permission: 'scripting' })
-    handle('scripting.registerContentScripts', this.registerContentScripts.bind(this), {
-      permission: 'scripting',
-    })
-    handle('scripting.getRegisteredContentScripts', this.getRegisteredContentScripts.bind(this), {
-      permission: 'scripting',
-    })
-    handle('scripting.unregisterContentScripts', this.unregisterContentScripts.bind(this), {
-      permission: 'scripting',
-    })
-    handle('scripting.updateContentScripts', this.updateContentScripts.bind(this), {
-      permission: 'scripting',
-    })
-
-    this.registryReady = this.loadPersistedRegistry()
-    this.ctx.store.on('tab-added', (tab: TabContents) => this.observeTab(tab))
-  }
-
-  private cloneScripts(list: chrome.scripting.RegisteredContentScript[]) {
-    return JSON.parse(JSON.stringify(list)) as chrome.scripting.RegisteredContentScript[]
-  }
-
-  private async loadPersistedRegistry() {
-    await this.ctx.stateStore.whenHydrated()
-    const initial = this.ctx.stateStore.getNamespace<Record<string, chrome.scripting.RegisteredContentScript[]>>(
-      DYNAMIC_REGISTRY_NS,
-      {},
+    handle('scripting.executeScript', this.executeScript)
+    handle('scripting.insertCSS', (event: ExtensionEvent, injection: any, opts?: any) =>
+      this.css(event, injection, opts, 'insertCSS'),
     )
-    Object.entries(initial || {}).forEach(([extensionId, scripts]) => {
-      if (Array.isArray(scripts)) {
-        this.registryByExtension.set(extensionId, this.cloneScripts(scripts))
-      }
-    })
-  }
+    handle('scripting.removeCSS', (event: ExtensionEvent, injection: any, opts?: any) =>
+      this.css(event, injection, opts, 'removeCSS'),
+    )
+    handle('scripting.restoreContentScripts', this.restoreContentScripts)
+    handle('scripting.syncContentScripts', this.syncContentScripts)
 
-  private persistRegistry() {
-    const payload: Record<string, chrome.scripting.RegisteredContentScript[]> = {}
-    this.registryByExtension.forEach((scripts, extensionId) => {
-      payload[extensionId] = this.cloneScripts(scripts)
-    })
-    this.ctx.stateStore.setNamespace(DYNAMIC_REGISTRY_NS, payload)
-    void this.ctx.stateStore.flush().catch((error) => {
-      console.error('Failed to persist dynamic scripting registry', error)
-    })
-  }
-
-  private scriptMatchesUrl(script: chrome.scripting.RegisteredContentScript, url: string) {
-    if (!Array.isArray(script.matches) || script.matches.length === 0) return false
-    const included = script.matches.some((pattern) => matchesPattern(pattern, url))
-    if (!included) return false
-    const excluded = Array.isArray(script.excludeMatches)
-      ? script.excludeMatches.some((pattern) => matchesPattern(pattern, url))
-      : false
-    return !excluded
-  }
-
-  private observeTab(tab: TabContents) {
-    if (!tab || tab.isDestroyed() || this.observedTabs.has(tab.id)) return
-    this.observedTabs.add(tab.id)
-
-    const injectFor = (runAt: RunAt) => {
-      void this.injectDynamicScripts(tab, runAt).catch((error) => {
-        console.error('Dynamic scripting injection failed', error)
-      })
-    }
-
-    tab.on('did-start-navigation', () => {
-      this.injectedByTab.delete(tab.id)
-      injectFor('document_start')
-    })
-    tab.on('dom-ready', () => injectFor('document_end'))
-    tab.on('did-finish-load', () => injectFor('document_idle'))
-
-    tab.once('destroyed', () => {
-      this.observedTabs.delete(tab.id)
-      this.injectedByTab.delete(tab.id)
-    })
-  }
-
-  private async injectDynamicScripts(tab: TabContents, runAt: RunAt) {
-    await this.registryReady
-    if (!tab || tab.isDestroyed()) return
-    const url = tab.getURL()
-    if (!url || typeof url !== 'string') return
-
-    const seen = this.injectedByTab.get(tab.id) || new Set<string>()
-    this.injectedByTab.set(tab.id, seen)
+    this.ready = this.load()
+    this.ctx.store.on('tab-added', (tab: TabContents) => this.observeTab(tab))
 
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
-    for (const [extensionId, scripts] of this.registryByExtension) {
-      if (!Array.isArray(scripts) || scripts.length === 0) continue
-      const extension = sessionExtensions.getExtension(extensionId)
-      if (!extension) continue
+    sessionExtensions.on('extension-unloaded', (_event: unknown, extension: Electron.Extension) => {
+      // Electron drops registered scripts with the extension; a reload
+      // registers the persisted ones again.
+      this.registered.delete(extension.id)
+      this.restored.delete(extension.id)
+    })
+  }
 
-      for (const script of scripts) {
-        const targetRunAt = (script.runAt || 'document_idle') as RunAt
-        if (targetRunAt !== runAt) continue
-        if (!this.scriptMatchesUrl(script, url)) continue
+  private async load() {
+    await this.ctx.stateStore.whenHydrated()
+    const legacy = this.ctx.stateStore.getNamespace<Record<string, RegisteredScript[]> | null>(
+      LEGACY_REGISTRY_NS,
+      null,
+    )
+    if (legacy && typeof legacy === 'object') {
+      const current = this.persisted()
+      for (const [extensionId, scripts] of Object.entries(legacy)) {
+        if (current[extensionId] || !Array.isArray(scripts)) continue
+        current[extensionId] = scripts.filter((s) => isPlainObject(s) && s.persistAcrossSessions !== false)
+      }
+      this.ctx.stateStore.setNamespace(CONTENT_SCRIPTS_NS, current)
+      this.ctx.stateStore.setNamespace(LEGACY_REGISTRY_NS, undefined)
+      void this.ctx.stateStore.flush().catch(() => {})
+    }
+  }
 
-        const dedupeKey = `${url}|${runAt}|${extensionId}|${script.id}`
-        if (seen.has(dedupeKey)) continue
+  private persisted(): Record<string, RegisteredScript[]> {
+    return { ...this.ctx.stateStore.getNamespace<Record<string, RegisteredScript[]>>(CONTENT_SCRIPTS_NS, {}) }
+  }
 
-        if (Array.isArray(script.css)) {
-          for (const cssPath of script.css) {
-            const absPath = await validateExtensionResource(extension, cssPath)
-            if (!absPath) continue
-            const css = await fs.readFile(absPath, 'utf8')
-            await tab.insertCSS(css)
-          }
+  // ------------------------------------------------------------ access
+
+  /** Chrome's refusal for a frame the extension may not script, or undefined. */
+  private accessError(extension: Electron.Extension, url: string, tabId: number): string | undefined {
+    let parsed: URL | undefined
+    try {
+      parsed = new URL(url)
+    } catch {}
+    if (parsed?.protocol === 'chrome:') return 'Cannot access a chrome:// URL'
+    if (parsed?.protocol === 'chrome-extension:' && parsed.hostname !== extension.id) {
+      return 'Cannot access a chrome-extension:// URL of different extension'
+    }
+    if (this.ctx.permissions.hasHostAccess(extension, url, { tabId, scriptable: true })) return undefined
+    // Chrome names the page only to an extension allowed to see its URL.
+    const seesUrl = this.ctx.permissions.has(extension, 'tabs') || this.ctx.permissions.hasActiveTab(extension, tabId)
+    return seesUrl
+      ? `Cannot access contents of url "${url}". Extension manifest must request permission to access this host.`
+      : 'Cannot access contents of the page. Extension manifest must request permission to access the respective host.'
+  }
+
+  /** Whether Electron itself would inject there: manifest hosts only. */
+  private electronCovers(extension: Electron.Extension, url: string) {
+    const declared = readManifestPermissions(extension.manifest)
+    return matchesAnyPattern([...declared.origins, ...declared.contentScriptOrigins], url)
+  }
+
+  private getTab(target: any): Electron.WebContents {
+    const tabId = target?.tabId
+    if (!Number.isInteger(tabId)) {
+      throw new Error("Error at parameter 'injection': Error at property 'target': Missing required property 'tabId'.")
+    }
+    const tab = this.ctx.store.getTabById(tabId)
+    if (!tab || tab.isDestroyed()) throw new Error(`No tab with id: ${tabId}`)
+    return tab
+  }
+
+  /**
+   * The frames a target names. Ids Electron would refuse are left for it to
+   * name in its own error; documentIds come from webNavigation, which makes
+   * its own, so they are turned into frame ids here.
+   */
+  private resolveTarget(tab: Electron.WebContents, target: Target, strict: boolean) {
+    const main = tab.mainFrame
+    const all = main.framesInSubtree.filter((f) => !f.isDestroyed())
+    const byId = (id: number) => all.find((f) => frameIdOf(f) === id)
+    const frameIds = Array.isArray(target.frameIds) ? target.frameIds.slice(0, MAX_TARGET_IDS + 1) : undefined
+    const documentIds = Array.isArray(target.documentIds)
+      ? target.documentIds.slice(0, MAX_TARGET_IDS + 1)
+      : undefined
+    if ((frameIds?.length ?? 0) > MAX_TARGET_IDS || (documentIds?.length ?? 0) > MAX_TARGET_IDS) {
+      throw new Error('Too many frames.')
+    }
+    if (strict) {
+      if (target.allFrames === true && (frameIds || documentIds)) {
+        throw new Error("Cannot specify 'allFrames' if either 'frameIds' or 'documentIds' is specified.")
+      }
+      if (frameIds && documentIds) throw new Error("Cannot specify both 'frameIds' and 'documentIds'.")
+    }
+
+    let ids: number[] | undefined = frameIds?.filter((id) => Number.isInteger(id))
+    if (documentIds) {
+      ids = []
+      for (const documentId of documentIds) {
+        if (typeof documentId !== 'string') continue
+        const resolved = this.ctx.store.resolveByDocumentId(documentId)
+        if (!resolved || resolved.tabId !== tab.id) {
+          throw new Error(`No document with id ${documentId} in tab with id ${tab.id}`)
         }
-
-        if (Array.isArray(script.js)) {
-          for (const jsPath of script.js) {
-            const absPath = await validateExtensionResource(extension, jsPath)
-            if (!absPath) continue
-            const jsCode = await fs.readFile(absPath, 'utf8')
-            const world = script.world || 'ISOLATED'
-            if (world !== 'MAIN' && typeof tab.executeJavaScriptInIsolatedWorld === 'function') {
-              await tab.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code: jsCode }], true)
-            } else {
-              await tab.executeJavaScript(jsCode, true)
-            }
-          }
-        }
-
-        seen.add(dedupeKey)
+        ids.push(resolved.frameId)
       }
     }
+
+    const frames: Electron.WebFrameMain[] = []
+    if (target.allFrames === true && !ids) {
+      frames.push(...all)
+    } else {
+      for (const id of ids ?? [0]) {
+        const frame = byId(id)
+        if (frame) frames.push(frame)
+        else if (strict) throw new Error(`No frame with id ${id} in tab with id ${tab.id}`)
+      }
+    }
+    const electronTarget: Target = { tabId: tab.id }
+    if (ids) electronTarget.frameIds = ids
+    else if (target.allFrames === true) electronTarget.allFrames = true
+    return { frames, electronTarget }
   }
 
-  private validateRegisteredScript(script: chrome.scripting.RegisteredContentScript) {
-    if (!script || typeof script !== 'object') {
-      throw new Error('registerContentScripts: script object is required')
-    }
-    if (!script.id || typeof script.id !== 'string') {
-      throw new Error('registerContentScripts: script.id is required')
-    }
-    if (!Array.isArray(script.matches) || script.matches.length === 0) {
-      throw new Error('registerContentScripts: script.matches must be a non-empty array')
-    }
-    if (!Array.isArray(script.js) && !Array.isArray(script.css)) {
-      throw new Error('registerContentScripts: script.js or script.css is required')
-    }
-  }
-
-  private validateUpdateScript(script: chrome.scripting.RegisteredContentScript) {
-    if (!script || typeof script !== 'object' || !script.id || typeof script.id !== 'string') {
-      throw new Error('updateContentScripts: script.id is required')
-    }
-    if (
-      typeof script.matches === 'undefined' &&
-      typeof script.excludeMatches === 'undefined' &&
-      typeof script.js === 'undefined' &&
-      typeof script.css === 'undefined' &&
-      typeof script.runAt === 'undefined' &&
-      typeof script.world === 'undefined' &&
-      typeof script.persistAcrossSessions === 'undefined' &&
-      typeof script.matchOriginAsFallback === 'undefined'
-    ) {
-      throw new Error(`updateContentScripts: script "${script.id}" has no mutable fields`)
-    }
-  }
-
-  private async registerContentScripts(
-    event: ExtensionEvent,
-    scripts: chrome.scripting.RegisteredContentScript[],
+  /** Throws Chrome's refusal for the first frame of `frames` the extension cannot script. */
+  private checkFrames(
+    extension: Electron.Extension,
+    tab: Electron.WebContents,
+    frames: Electron.WebFrameMain[],
+    target: Target,
   ) {
-    await this.registryReady
-    if (!Array.isArray(scripts) || scripts.length === 0) return
-    const extensionId = event.extension.id
-    const current = this.registryByExtension.get(extensionId) || []
-    const ids = new Set(current.map((s) => s.id))
-
-    scripts.forEach((script) => {
-      this.validateRegisteredScript(script)
-      if (ids.has(script.id)) {
-        throw new Error(`registerContentScripts: duplicate script id "${script.id}"`)
-      }
-      current.push(this.cloneScripts([script])[0])
-      ids.add(script.id)
-    })
-
-    this.registryByExtension.set(extensionId, current)
-    this.persistRegistry()
+    // With allFrames, frames out of reach are left out, as in Chrome; the
+    // top frame still has to be reachable.
+    const checked = target.allFrames === true ? frames.filter((f) => f === f.top) : frames
+    for (const frame of checked) {
+      const error = this.accessError(extension, frame.url, tab.id)
+      if (error) throw new Error(error)
+    }
   }
 
-  private async getRegisteredContentScripts(
-    event: ExtensionEvent,
-    filter?: { ids?: string[] },
-  ): Promise<chrome.scripting.RegisteredContentScript[]> {
-    await this.registryReady
-    const extensionId = event.extension.id
-    const all = this.registryByExtension.get(extensionId) || []
-    const ids = filter?.ids
-    if (!Array.isArray(ids) || ids.length === 0) {
-      return this.cloneScripts(all)
+  private documentIds(tabId: number, frames: Electron.WebFrameMain[]) {
+    const out: Record<number, string> = {}
+    for (const frame of frames) {
+      const id = frameIdOf(frame)
+      const documentId = this.ctx.store.getDocumentId(tabId, id)
+      if (documentId) out[id] = documentId
     }
-    const selected = all.filter((script) => ids.includes(script.id))
-    return this.cloneScripts(selected)
+    return out
   }
 
-  private async unregisterContentScripts(
-    event: ExtensionEvent,
-    filter?: { ids?: string[] },
-  ): Promise<void> {
-    await this.registryReady
-    const extensionId = event.extension.id
-    const all = this.registryByExtension.get(extensionId) || []
-    if (!filter || !Array.isArray(filter.ids) || filter.ids.length === 0) {
-      this.registryByExtension.delete(extensionId)
-      this.persistRegistry()
-      return
-    }
-    const ids = new Set(filter.ids)
-    const next = all.filter((script) => !ids.has(script.id))
-    if (next.length > 0) this.registryByExtension.set(extensionId, next)
-    else this.registryByExtension.delete(extensionId)
-    this.persistRegistry()
-  }
+  // ------------------------------------------------------------ executeScript
 
-  private async updateContentScripts(
-    event: ExtensionEvent,
-    scripts: chrome.scripting.RegisteredContentScript[],
-  ): Promise<void> {
-    await this.registryReady
-    if (!Array.isArray(scripts) || scripts.length === 0) return
-    const extensionId = event.extension.id
-    const current = this.registryByExtension.get(extensionId) || []
-    const byId = new Map(current.map((script) => [script.id, script]))
-
-    scripts.forEach((update) => {
-      this.validateUpdateScript(update)
-      const existing = byId.get(update.id)
-      if (!existing) {
-        throw new Error(`updateContentScripts: unknown script id "${update.id}"`)
-      }
-
-      const merged: chrome.scripting.RegisteredContentScript = {
-        ...existing,
-        ...this.cloneScripts([update])[0],
-        id: existing.id,
-      }
-      this.validateRegisteredScript(merged)
-      byId.set(merged.id, merged)
-    })
-
-    this.registryByExtension.set(extensionId, Array.from(byId.values()))
-    this.persistRegistry()
-  }
-
-  private async insertCSS(_event: ExtensionEvent, injection: any): Promise<void> {
-    const tabId = injection?.target?.tabId
-    const css = injection?.css
-    if (typeof tabId !== 'number' || typeof css !== 'string') return
-
-    const tab = this.ctx.store.getTabById(tabId)
-    if (!tab || tab.isDestroyed()) {
-      throw new Error(`No tab with id: ${tabId}`)
-    }
-
-    const frame = resolveInjectionFrame(
-      tab,
-      injection?.target,
-      (id) => this.ctx.store.resolveByDocumentId(id),
-      tabId,
-    )
-    if (!frame || frame.isDestroyed()) {
-      throw new Error('insertCSS: frame not available')
-    }
-    if (frame.top && frame !== frame.top) {
-      const code = `(function(){var e=document.createElement('style');e.textContent=${JSON.stringify(css)};(document.head||document.documentElement).appendChild(e);})()`
-      await frame.executeJavaScript(code, true)
-      return
-    }
-
-    await tab.insertCSS(css)
-  }
-
-  private async executeScript(
-    _event: ExtensionEvent,
+  private executeScript = async (
+    { extension }: ExtensionEvent,
     injection: any,
-  ): Promise<{ documentId?: string; frameId?: number; result?: unknown }[]> {
-    const tabId = injection?.target?.tabId
-    if (typeof tabId !== 'number') {
-      throw new Error('executeScript: target.tabId is required')
+    opts?: { fallback?: boolean },
+  ) => {
+    if (!isPlainObject(injection)) throw new Error("Error at parameter 'injection': Invalid type: expected object.")
+    const tab = this.getTab(injection.target)
+    const fallback = opts?.fallback === true
+    const { frames, electronTarget } = this.resolveTarget(tab, injection.target, fallback)
+    this.checkFrames(extension, tab, frames, injection.target)
+    if (!fallback) {
+      return { mode: 'electron', target: electronTarget, documentIds: this.documentIds(tab.id, frames) }
     }
+    return { mode: 'done', result: await this.runScript(extension, tab, frames, injection) }
+  }
 
-    const tab = this.ctx.store.getTabById(tabId)
-    if (!tab || tab.isDestroyed()) {
-      throw new Error(`No tab with id: ${tabId}`)
-    }
-
-    const funcSrc =
-      typeof injection.func === 'string' ? injection.func : String(injection.func ?? '')
-    if (!funcSrc.trim()) {
-      throw new Error('executeScript: func is required')
-    }
-    const args = Array.isArray(injection.args) ? injection.args : []
-    const frame = resolveInjectionFrame(
-      tab,
-      injection?.target,
-      (id) => this.ctx.store.resolveByDocumentId(id),
-      tabId,
-    )
-    if (!frame || frame.isDestroyed()) {
-      throw new Error('executeScript: frame not available')
-    }
-
-    const resolvedFrameId = frameId(frame)
-    const documentId =
-      this.ctx.store.getDocumentId(tabId, resolvedFrameId) ||
-      this.ctx.store.newDocumentId(tabId, resolvedFrameId)
-
-    const code = `(function(){ const __a = ${JSON.stringify(args)}; var fn = ${funcSrc}; return fn.apply(null, __a); })()`
-
-    const world = injection.world
-    const isolated = world !== 'MAIN' && world !== 1
-
-    if (isolated) {
-      // Isolated world only works on the top frame in Electron.
-      if (frame === frame.top && typeof tab.executeJavaScriptInIsolatedWorld === 'function') {
-        const out = await tab.executeJavaScriptInIsolatedWorld(ISOLATED_WORLD, [{ code }], true)
-        return [{ documentId, frameId: resolvedFrameId, result: out }]
+  private async readFiles(extension: Electron.Extension, files: unknown): Promise<string[]> {
+    if (!Array.isArray(files)) throw new Error("Error at property 'files': Invalid type: expected array.")
+    if (files.length === 0) throw new Error('At least one file must be specified.')
+    if (files.length > MAX_FILES) throw new Error('Too many files.')
+    const out: string[] = []
+    for (const file of files) {
+      const abs = typeof file === 'string' ? resolveExtensionPath(extension, file) : undefined
+      let text: string | undefined
+      if (abs) {
+        try {
+          const stat = await fs.stat(abs)
+          if (stat.isFile() && stat.size <= MAX_CODE_LENGTH) text = await fs.readFile(abs, 'utf8')
+        } catch {}
       }
-      throw new Error('executeScript: ISOLATED world is unavailable for this frame')
+      if (text === undefined) throw new Error(`Could not load file: '${String(file)}'.`)
+      out.push(text)
+    }
+    return out
+  }
+
+  /** Runs a script from the main process, for frames Electron would not inject into. */
+  private async runScript(
+    extension: Electron.Extension,
+    tab: Electron.WebContents,
+    frames: Electron.WebFrameMain[],
+    injection: any,
+  ) {
+    const hasFunc = typeof injection.func === 'string' && injection.func.trim() !== ''
+    const hasFiles = injection.files !== undefined
+    if (hasFunc === hasFiles) throw new Error("Exactly one of 'func' and 'files' must be specified")
+    if (hasFiles && injection.args !== undefined) throw new Error("'args' may not be used with file injections.")
+    const world = injection.world ?? 'ISOLATED'
+    if (world !== 'ISOLATED' && world !== 'MAIN') {
+      throw new Error("Error at property 'world': Value must be one of ISOLATED, MAIN.")
+    }
+    let sources: string[]
+    if (hasFunc) {
+      if (injection.func.length > MAX_CODE_LENGTH) throw new Error('Script is too long.')
+      let args = '[]'
+      if (injection.args !== undefined) {
+        if (!Array.isArray(injection.args)) throw new Error("Error at property 'args': Invalid type: expected array.")
+        args = JSON.stringify(injection.args)
+        if (args.length > MAX_CODE_LENGTH) throw new Error('Arguments are too long.')
+      }
+      sources = [`(${injection.func}).apply(null, ${args})`]
+    } else {
+      sources = await this.readFiles(extension, injection.files)
     }
 
-    const result = await frame.executeJavaScript(code, true)
-    return [{ documentId, frameId: resolvedFrameId, result }]
+    const results: { documentId?: string; frameId: number; result: unknown }[] = []
+    for (const frame of frames) {
+      if (frame.isDestroyed() || this.accessError(extension, frame.url, tab.id)) continue
+      const frameId = frameIdOf(frame)
+      let result: unknown = null
+      try {
+        for (const code of sources) {
+          if (world === 'MAIN') {
+            result = await frame.executeJavaScript(code, true)
+          } else if (frame === frame.top) {
+            result = await tab.executeJavaScriptInIsolatedWorld(isolatedWorldId(extension.id), [{ code }], true)
+          } else {
+            // Electron has no isolated worlds in subframes for the main
+            // process; the page's own world would let the page tamper.
+            throw new Error('skip')
+          }
+        }
+      } catch (error) {
+        if ((error as Error)?.message === 'skip') continue
+        result = null
+      }
+      const documentId =
+        this.ctx.store.getDocumentId(tab.id, frameId) || this.ctx.store.newDocumentId(tab.id, frameId)
+      results.push({ documentId, frameId, result: result === undefined ? null : result })
+    }
+    return results
+  }
+
+  // ------------------------------------------------------------ insertCSS / removeCSS
+
+  private css = async (
+    { extension }: ExtensionEvent,
+    injection: any,
+    opts: { fallback?: boolean } | undefined,
+    method: 'insertCSS' | 'removeCSS',
+  ) => {
+    if (!isPlainObject(injection)) throw new Error("Error at parameter 'injection': Invalid type: expected object.")
+    const tab = this.getTab(injection.target)
+    const fallback = opts?.fallback === true
+    const { frames, electronTarget } = this.resolveTarget(tab, injection.target, fallback)
+    this.checkFrames(extension, tab, frames, injection.target)
+    if (!fallback) return { mode: 'electron', target: electronTarget }
+
+    const hasCss = typeof injection.css === 'string'
+    const hasFiles = injection.files !== undefined
+    if (hasCss === hasFiles) throw new Error("Exactly one of 'css' and 'files' must be specified.")
+    const origin = injection.origin ?? 'AUTHOR'
+    if (origin !== 'AUTHOR' && origin !== 'USER') {
+      throw new Error("Error at property 'origin': Value must be one of AUTHOR, USER.")
+    }
+    if (hasCss && injection.css.length > MAX_CODE_LENGTH) throw new Error('CSS is too long.')
+    const sources: string[] = hasCss ? [injection.css] : await this.readFiles(extension, injection.files)
+    const label = hasCss ? `css:${injection.css}` : `files:${JSON.stringify(injection.files)}`
+
+    // Electron inserts CSS into the top frame only from here.
+    for (const frame of frames) {
+      if (frame !== frame.top || this.accessError(extension, frame.url, tab.id)) continue
+      const key = `${extension.id}|${tab.id}|${frame.url}|${origin}|${label}`
+      if (method === 'insertCSS') {
+        const cssOrigin = origin === 'USER' ? 'user' : 'author'
+        const inserted = await tab.insertCSS(sources.join('\n'), { cssOrigin })
+        this.insertedCss.set(key, inserted)
+      } else {
+        const inserted = this.insertedCss.get(key)
+        if (inserted) {
+          this.insertedCss.delete(key)
+          await tab.removeInsertedCSS(inserted).catch(() => {})
+        }
+      }
+    }
+    return { mode: 'done' }
+  }
+
+  // ------------------------------------------------------------ registered content scripts
+
+  /** The persisted scripts to register again, once per run, to the first context that asks. */
+  private restoreContentScripts = async ({ extension }: ExtensionEvent): Promise<RegisteredScript[]> => {
+    await this.ready
+    if (this.restored.has(extension.id)) return []
+    this.restored.add(extension.id)
+    const scripts = this.persisted()[extension.id]
+    return Array.isArray(scripts) ? scripts.filter(isPlainObject).slice(0, MAX_SCRIPTS) : []
+  }
+
+  /** What Electron has registered now, after a change; persisted ones are kept. */
+  private syncContentScripts = async ({ extension }: ExtensionEvent, scripts: unknown) => {
+    await this.ready
+    if (!Array.isArray(scripts)) return
+    const list: RegisteredScript[] = []
+    for (const script of scripts.slice(0, MAX_SCRIPTS)) {
+      if (!isPlainObject(script) || typeof script.id !== 'string' || !Array.isArray(script.matches)) continue
+      const strings = (v: unknown) =>
+        Array.isArray(v) ? v.filter((s): s is string => typeof s === 'string').slice(0, MAX_FILES) : undefined
+      const clean: RegisteredScript = {
+        id: script.id.slice(0, 1024),
+        matches: strings(script.matches) || [],
+        allFrames: script.allFrames === true,
+        matchOriginAsFallback: script.matchOriginAsFallback === true,
+        persistAcrossSessions: script.persistAcrossSessions !== false,
+        runAt: ['document_start', 'document_end', 'document_idle'].includes(script.runAt)
+          ? script.runAt
+          : 'document_idle',
+        world: script.world === 'MAIN' ? 'MAIN' : 'ISOLATED',
+      }
+      const excludeMatches = strings(script.excludeMatches)
+      if (excludeMatches?.length) clean.excludeMatches = excludeMatches
+      const js = strings(script.js)
+      if (js?.length) clean.js = js
+      const css = strings(script.css)
+      if (css?.length) clean.css = css
+      list.push(clean)
+    }
+    this.registered.set(extension.id, list)
+    const all = this.persisted()
+    const keep = list.filter((s) => s.persistAcrossSessions !== false)
+    if (keep.length) all[extension.id] = keep
+    else delete all[extension.id]
+    this.ctx.stateStore.setNamespace(CONTENT_SCRIPTS_NS, all)
+    void this.ctx.stateStore.flush().catch((error) => {
+      console.error('Failed to persist registered content scripts', error)
+    })
+  }
+
+  /**
+   * Electron injects registered scripts only where the manifest grants
+   * access. Where PeerSky alone grants it (an optional host permission),
+   * the main process injects them into the top frame.
+   */
+  private observeTab(tab: TabContents) {
+    if (!tab || tab.isDestroyed() || this.observedTabs.has(tab)) return
+    this.observedTabs.add(tab)
+    const inject = (runAt: RunAt) => {
+      void this.injectRegistered(tab, runAt).catch((error) => {
+        console.error('Content script injection failed', error)
+      })
+    }
+    tab.on('did-navigate', () => inject('document_start'))
+    tab.on('dom-ready', () => inject('document_end'))
+    tab.on('did-finish-load', () => inject('document_idle'))
+  }
+
+  private async injectRegistered(tab: TabContents, runAt: RunAt) {
+    if (tab.isDestroyed() || this.registered.size === 0) return
+    const url = tab.getURL()
+    const sessionExtensions = this.ctx.session.extensions || this.ctx.session
+    for (const [extensionId, scripts] of this.registered) {
+      const extension = sessionExtensions.getExtension(extensionId)
+      if (!extension || this.electronCovers(extension, url)) continue
+      if (this.accessError(extension, url, tab.id)) continue
+      for (const script of scripts) {
+        if ((script.runAt || 'document_idle') !== runAt) continue
+        if (!matchesAnyPattern(script.matches, url) || matchesAnyPattern(script.excludeMatches, url)) continue
+        for (const file of script.css || []) {
+          const [text] = await this.readFiles(extension, [file]).catch(() => [undefined])
+          if (text !== undefined && !tab.isDestroyed()) await tab.insertCSS(text)
+        }
+        for (const file of script.js || []) {
+          const [code] = await this.readFiles(extension, [file]).catch(() => [undefined])
+          if (code === undefined || tab.isDestroyed()) continue
+          if (script.world === 'MAIN') await tab.mainFrame.executeJavaScript(code, false)
+          else await tab.executeJavaScriptInIsolatedWorld(isolatedWorldId(extension.id), [{ code }], false)
+        }
+      }
+    }
   }
 }

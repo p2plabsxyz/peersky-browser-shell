@@ -37,36 +37,12 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
     },
     {
-      "path": "probe.cookies.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (36 differences)."
-    },
-    {
       "path": "probe.permissions.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
     },
     {
       "path": "probe.management.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (26 differences)."
-    },
-    {
-      "path": "probe.scripting.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (44 differences)."
-    },
-    {
-      "path": "probe.webNavigation.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (41 differences)."
-    },
-    {
-      "path": "probe.webRequest.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (361 differences)."
-    },
-    {
-      "path": "probe.declarativeNetRequest.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (19 differences)."
-    },
-    {
-      "path": "probe.downloads.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (40 differences)."
     },
     {
       "path": "probe.sessions.*",
@@ -117,16 +93,8 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
     },
     {
-      "path": "probe.debugger.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (6 differences)."
-    },
-    {
       "path": "probe.capture.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
-    },
-    {
-      "path": "probe.userScripts.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (14 differences)."
     },
     {
       "path": "probe.declarativeContent.*",
@@ -167,6 +135,10 @@
     {
       "path": "pages.peer.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (23 differences)."
+    },
+    {
+      "path": "probe.userScripts.*",
+      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
     }
   ]
 }

@@ -15,6 +15,46 @@ export class ProbeBrowser {
 
   constructor(private session: Electron.Session) {}
 
+  /**
+   * Hands the session's requests to chrome.webRequest and declarativeNetRequest,
+   * as PeerSky does: Electron gives each webRequest event to one handler only,
+   * so the host owns it and forwards to the extensions library.
+   */
+  forwardWebRequests() {
+    const wr = this.session.webRequest
+    const all = { urls: ['<all_urls>'] }
+    const forward = (url: string) => /^(https?|wss?):/.test(url)
+    wr.onBeforeRequest(all, async (details, callback) => {
+      if (!forward(details.url)) return callback({})
+      const result: any = (await this.extensions.notifyWebRequestOnBeforeRequest(details).catch(() => ({}))) || {}
+      if (result.redirectUrl && !result.redirectURL) result.redirectURL = result.redirectUrl
+      callback(result)
+    })
+    wr.onBeforeSendHeaders(all, async (details, callback) => {
+      if (!forward(details.url)) return callback({})
+      callback((await this.extensions.notifyWebRequestOnBeforeSendHeaders(details).catch(() => ({}))) || {})
+    })
+    wr.onSendHeaders(all, (details) => {
+      if (forward(details.url)) void this.extensions.notifyWebRequestOnSendHeaders(details).catch(() => {})
+    })
+    wr.onHeadersReceived(all, async (details, callback) => {
+      if (!forward(details.url)) return callback({})
+      callback((await this.extensions.notifyWebRequestOnHeadersReceived(details).catch(() => ({}))) || {})
+    })
+    wr.onBeforeRedirect(all, (details) => {
+      if (forward(details.url)) void this.extensions.notifyWebRequestOnBeforeRedirect(details).catch(() => {})
+    })
+    wr.onResponseStarted(all, (details) => {
+      if (forward(details.url)) void this.extensions.notifyWebRequestOnResponseStarted(details).catch(() => {})
+    })
+    wr.onCompleted(all, (details) => {
+      if (forward(details.url)) void this.extensions.notifyWebRequestOnCompleted(details).catch(() => {})
+    })
+    wr.onErrorOccurred(all, (details) => {
+      if (forward(details.url)) void this.extensions.notifyWebRequestOnErrorOccurred(details).catch(() => {})
+    })
+  }
+
   private newWindow(details: { width?: number; height?: number; left?: number; top?: number } = {}) {
     const win = new BaseWindow({
       show: false,

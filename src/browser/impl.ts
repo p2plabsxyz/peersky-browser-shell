@@ -34,6 +34,21 @@ export interface ChromeExtensionImpl {
     windowId?: number
   }): Promise<void> | void
 
+  /**
+   * Shows or hides the browser's own download UI (the downloads bubble or
+   * bar), for chrome.downloads.setUiOptions. `enabled` is false while any
+   * extension has asked for it to be hidden. Without this hook the call
+   * succeeds and changes nothing.
+   */
+  setDownloadUiEnabled?(extension: Electron.Extension, enabled: boolean): void
+
+  /**
+   * Whether the person allowed the extension to run user scripts, as
+   * Chrome's per-extension "Allow User Scripts" switch does. Without this
+   * hook every extension that asks for the userScripts permission may.
+   */
+  isUserScriptsAllowed?(extension: Electron.Extension): boolean
+
   closeSidePanel?(details: {
     extension: Electron.Extension
     tabId?: number

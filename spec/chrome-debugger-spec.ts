@@ -80,19 +80,22 @@ describe('chrome.debugger', () => {
   })
 
   describe('onDetach event', () => {
-    it('fires when debugger is detached', async () => {
+    // Chrome tells an extension when it loses the debugger (the tab closed,
+    // the person cancelled), not when it detached itself.
+    it('does not fire when the extension detaches itself', async () => {
       const tabId = browser.window.webContents.id
       await browser.crx.exec('debugger.attach', { tabId }, '1.3')
 
-      const eventPromise = browser.crx.eventOnce('debugger.onDetach')
+      const eventPromise = browser.crx.eventOnce('debugger.onDetach').then(() => 'fired')
       // Allow the event listener registration IPC to flush before detaching.
       await new Promise<void>((resolve) => setTimeout(resolve, 50))
       await browser.crx.exec('debugger.detach', { tabId })
 
-      const [target, reason] = await eventPromise
-      expect(target).to.be.an('object')
-      expect(target.tabId).to.equal(tabId)
-      expect(reason).to.be.a('string')
+      const outcome = await Promise.race([
+        eventPromise,
+        new Promise((resolve) => setTimeout(() => resolve('none'), 500)),
+      ])
+      expect(outcome).to.equal('none')
     })
   })
 })

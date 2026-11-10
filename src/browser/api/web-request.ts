@@ -2,14 +2,46 @@ import { webContents as electronWebContents } from 'electron'
 
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
-import { matchesPattern } from './common'
+import { matchesPattern, tryParseMatchPattern } from '../match-pattern'
 import type { DeclarativeNetRequestAPI } from './declarative-net-request'
+
+/**
+ * chrome.webRequest
+ *
+ * The host owns the session's webRequest hooks (Electron lets one handler
+ * have each) and hands every request to the notify* methods. Here each
+ * request goes to the listeners whose filter matches, and only to
+ * extensions Chrome would show it to: host access to the URL, and for
+ * anything but a top-level navigation, to the page that made it too.
+ */
+
+const EVENTS = [
+  'onBeforeRequest',
+  'onBeforeSendHeaders',
+  'onSendHeaders',
+  'onHeadersReceived',
+  'onAuthRequired',
+  'onResponseStarted',
+  'onBeforeRedirect',
+  'onCompleted',
+  'onErrorOccurred',
+] as const
+type EventName = (typeof EVENTS)[number]
+
+/** Events whose listeners may change the request, with what they may ask for. */
+const BLOCKING_EVENTS = new Set<EventName>(['onBeforeRequest', 'onBeforeSendHeaders', 'onHeadersReceived', 'onAuthRequired'])
+
+const MAX_LISTENERS_PER_EXTENSION = 1000
+const MAX_FILTER_URLS = 1000
 
 interface ListenerEntry {
   id: string
   extensionId: string
   filter: chrome.webRequest.RequestFilter
-  extraInfoSpec?: string[]
+  extraInfoSpec: string[]
+  blocking: boolean
+  /** Identifies the registration, so a restarted worker's listener replaces its old self. */
+  key: string
 }
 
 export interface WebRequestBlockingResponse {
@@ -62,6 +94,17 @@ function originsMatch(a: string, b: string): boolean {
   }
 }
 
+const originOf = (url: string | undefined) => {
+  if (!url) return undefined
+  try {
+    const origin = new URL(url).origin
+    return origin === 'null' ? undefined : origin
+  } catch {
+    return undefined
+  }
+}
+
+/** What is known about a request, from which each event's details are made. */
 export interface WebRequestDetails {
   url: string
   method: string
@@ -69,17 +112,22 @@ export interface WebRequestDetails {
   windowId?: number
   requestId?: string
   documentId?: string
+  parentDocumentId?: string
+  frameType?: string
+  documentLifecycle?: string
   frameId?: number
   parentFrameId?: number
   type?: string
   timeStamp?: number
+  /** Chrome's initiator: the origin that made the request. */
   initiator?: string
+  /** The page that made the request, for declarativeNetRequest's domain rules. */
   documentUrl?: string
-  frameAncestors?: { url: string; frameId: number }[]
   requestBody?: chrome.webRequest.WebRequestBody
   requestHeaders?: chrome.webRequest.HttpHeader[]
   responseHeaders?: chrome.webRequest.HttpHeader[]
   statusCode?: number
+  statusLine?: string
   redirectUrl?: string
   ip?: string
   fromCache?: boolean
@@ -100,15 +148,16 @@ interface ElectronRequestDetails {
   resourceType?: string
   timestamp?: number
   referrer?: string
+  initiatorOrigin?: string
   webContents?: Electron.WebContents
   frame?: Electron.WebFrameMain | null
   webContentsId?: number
-  frameId?: number
-  parentFrameId?: number
   uploadData?: Array<{ bytes?: Buffer; file?: string }>
   requestHeaders?: Record<string, string | string[]>
   responseHeaders?: Record<string, string | string[]>
   statusCode?: number
+  statusLine?: string
+  redirectURL?: string
   fromCache?: boolean
   error?: string
   ip?: string
@@ -131,408 +180,149 @@ interface PendingBlockingRequest<T = WebRequestBlockingResponse> {
 
 const BLOCKING_RESPONSE_TIMEOUT_MS = 2000
 
-export class WebRequestAPI {
-  private onBeforeRequestListeners: ListenerEntry[] = []
-  private onBeforeSendHeadersListeners: ListenerEntry[] = []
-  private onSendHeadersListeners: ListenerEntry[] = []
-  private onHeadersReceivedListeners: ListenerEntry[] = []
-  private onBeforeRedirectListeners: ListenerEntry[] = []
-  private onResponseStartedListeners: ListenerEntry[] = []
-  private onCompletedListeners: ListenerEntry[] = []
-  private onErrorOccurredListeners: ListenerEntry[] = []
-  private onAuthRequiredListeners: ListenerEntry[] = []
+const isIpLiteral = (host: string) => /^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.startsWith('[')
 
+export class WebRequestAPI {
+  private listeners = new Map<EventName, ListenerEntry[]>(EVENTS.map((name) => [name, []]))
   private requestIdCounter = 0
   private listenerIdCounter = 0
   private pendingBlocking = new Map<string, PendingBlockingRequest>()
+  /** Server addresses Electron reported on a redirect, by request id. */
+  private requestIps = new Map<string, string>()
+  private watchedSenders = new WeakSet<object>()
 
   constructor(
     private ctx: ExtensionContext,
     private dnr: DeclarativeNetRequestAPI | null = null,
   ) {
     const handle = this.ctx.router.apiHandler()
-    handle('webRequest.addOnBeforeRequestListener', this.addOnBeforeRequestListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.removeOnBeforeRequestListener', this.removeOnBeforeRequestListener, {
-      permission: 'webRequest',
-    })
-    handle(
-      'webRequest.addOnBeforeSendHeadersListener',
-      this.addOnBeforeSendHeadersListener,
-      {
-        permission: 'webRequest',
-      },
-    )
-    handle('webRequest.removeOnBeforeSendHeadersListener', this.removeOnBeforeSendHeadersListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.addOnSendHeadersListener', this.addOnSendHeadersListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.removeOnSendHeadersListener', this.removeOnSendHeadersListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.addOnHeadersReceivedListener', this.addOnHeadersReceivedListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.removeOnHeadersReceivedListener', this.removeOnHeadersReceivedListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.addOnBeforeRedirectListener', this.addOnBeforeRedirectListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.removeOnBeforeRedirectListener', this.removeOnBeforeRedirectListener, {
-      permission: 'webRequest',
-    })
-    handle(
-      'webRequest.addOnResponseStartedListener',
-      this.addOnResponseStartedListener,
-      {
-        permission: 'webRequest',
-      },
-    )
-    handle('webRequest.removeOnResponseStartedListener', this.removeOnResponseStartedListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.addOnCompletedListener', this.addOnCompletedListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.removeOnCompletedListener', this.removeOnCompletedListener, {
-      permission: 'webRequest',
-    })
-    handle(
-      'webRequest.addOnErrorOccurredListener',
-      this.addOnErrorOccurredListener,
-      {
-        permission: 'webRequest',
-      },
-    )
-    handle('webRequest.removeOnErrorOccurredListener', this.removeOnErrorOccurredListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.addOnAuthRequiredListener', this.addOnAuthRequiredListener, {
-      permission: 'webRequest',
-    })
-    handle('webRequest.removeOnAuthRequiredListener', this.removeOnAuthRequiredListener, {
-      permission: 'webRequest',
-    })
+    for (const name of EVENTS) {
+      const suffix = name[0].toUpperCase() + name.slice(1)
+      handle(
+        `webRequest.add${suffix}Listener`,
+        (event: ExtensionEvent, filter: any, extraInfoSpec?: any, ordinal?: number) =>
+          this.addListener(name, event, filter, extraInfoSpec, ordinal),
+      )
+      handle(`webRequest.remove${suffix}Listener`, (event: ExtensionEvent, listenerId?: string) =>
+        this.removeListener(name, event, listenerId),
+      )
+    }
 
     // Each stage keeps its own pending entry: a request carries one id through
     // every stage, so a single map would let one stage's verdict settle
     // another's promise.
-    handle('webRequest.onBeforeRequest.response', this.handleBlockingResponseFor('onBeforeRequest'))
-    handle(
-      'webRequest.onBeforeSendHeaders.response',
-      this.handleBlockingResponseFor('onBeforeSendHeaders'),
-    )
-    handle(
-      'webRequest.onHeadersReceived.response',
-      this.handleBlockingResponseFor('onHeadersReceived'),
-    )
-    handle('webRequest.onAuthRequired.response', this.handleBlockingResponseFor('onAuthRequired'))
+    for (const name of BLOCKING_EVENTS) {
+      handle(`webRequest.${name}.response`, this.handleBlockingResponseFor(name))
+    }
 
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
-    sessionExtensions.on('extension-unloaded', (_event, extension) => {
-      const id = extension.id
-      this.onBeforeRequestListeners = this.onBeforeRequestListeners.filter((e) => e.extensionId !== id)
-      this.onBeforeSendHeadersListeners = this.onBeforeSendHeadersListeners.filter(
-        (e) => e.extensionId !== id,
-      )
-      this.onSendHeadersListeners = this.onSendHeadersListeners.filter((e) => e.extensionId !== id)
-      this.onHeadersReceivedListeners = this.onHeadersReceivedListeners.filter(
-        (e) => e.extensionId !== id,
-      )
-      this.onBeforeRedirectListeners = this.onBeforeRedirectListeners.filter(
-        (e) => e.extensionId !== id,
-      )
-      this.onResponseStartedListeners = this.onResponseStartedListeners.filter(
-        (e) => e.extensionId !== id,
-      )
-      this.onCompletedListeners = this.onCompletedListeners.filter((e) => e.extensionId !== id)
-      this.onErrorOccurredListeners = this.onErrorOccurredListeners.filter(
-        (e) => e.extensionId !== id,
-      )
-      this.onAuthRequiredListeners = this.onAuthRequiredListeners.filter(
-        (e) => e.extensionId !== id,
-      )
+    sessionExtensions.on('extension-unloaded', (_event: unknown, extension: Electron.Extension) => {
+      for (const name of EVENTS) {
+        this.listeners.set(name, this.list(name).filter((e) => e.extensionId !== extension.id))
+      }
     })
+  }
+
+  private list(name: EventName) {
+    return this.listeners.get(name)!
+  }
+
+  private hasPermission(extension: Electron.Extension, permission: string) {
+    const permissions = this.ctx.permissions
+    if (permissions) return permissions.has(extension, permission)
+    return ((extension.manifest?.permissions || []) as string[]).includes(permission)
   }
 
   /**
-   * Register a listener entry for one webRequest event.
+   * Registers one listener. An extension may hold several per event with
+   * different filters: uBlock Origin keeps a broad filtering listener next to
+   * a narrow guard for its own resources. The id returned goes back with
+   * every event, and the renderer hands an event only to the listener it is
+   * addressed to.
    *
-   * An extension may hold several listeners per event with different filters —
-   * uBlock Origin registers a broad http/https filtering listener alongside a
-   * narrow guard for its own web-accessible resources. Replacing per extension
-   * here silently dropped all but the last one, while the renderer kept every
-   * callback subscribed to the shared IPC channel; each event was then answered
-   * by all of them under one listener id, and whichever response landed first
-   * won. A guard whose filter should never match http URLs ended up cancelling
-   * arbitrary page traffic.
-   *
-   * An entry with an identical (extension, filter, spec) key replaces its
-   * predecessor so service-worker restarts re-registering the same listeners
-   * do not pile up stale entries. The entry id is returned to the renderer,
-   * which echoes it back with each blocking response and ignores events
-   * addressed to other listeners.
+   * A registration with the same key (sender, filter, spec and its place
+   * among identical ones) replaces the old one, so a restarted service
+   * worker does not pile up listeners nobody answers for.
    */
-  private registerListener(
-    list: ListenerEntry[],
-    extension: Electron.Extension,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ): { list: ListenerEntry[]; id: string } {
-    const keyOf = (f: chrome.webRequest.RequestFilter, spec?: string[]) =>
-      JSON.stringify([f?.urls ?? [], f?.types ?? [], spec ?? []])
-    const entry: ListenerEntry = {
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
+  private addListener(
+    name: EventName,
+    event: ExtensionEvent,
+    filter: any,
+    extraInfoSpec?: any,
+    ordinal?: number,
+  ) {
+    const { extension } = event
+    if (!filter || typeof filter !== 'object' || !Array.isArray(filter.urls)) return
+    const urls = filter.urls
+      .filter((u: unknown): u is string => typeof u === 'string' && !!tryParseMatchPattern(u))
+      .slice(0, MAX_FILTER_URLS)
+    // Chrome drops a listener whose patterns are all invalid.
+    if (urls.length === 0) return
+    const clean: chrome.webRequest.RequestFilter = { urls }
+    if (Array.isArray(filter.types)) {
+      clean.types = filter.types.filter((t: unknown) => typeof t === 'string').slice(0, 32)
     }
-    const key = keyOf(filter, extraInfoSpec)
-    const next = list.filter(
-      (e) => e.extensionId !== extension.id || keyOf(e.filter, e.extraInfoSpec) !== key,
-    )
-    next.push(entry)
-    return { list: next, id: entry.id }
-  }
+    if (Number.isInteger(filter.tabId)) clean.tabId = filter.tabId
+    if (Number.isInteger(filter.windowId)) clean.windowId = filter.windowId
 
-  private removeListenerEntry(
-    list: ListenerEntry[],
-    extension: Electron.Extension | undefined,
-    listenerId?: string,
-  ): ListenerEntry[] {
-    if (!extension) return list
-    return list.filter((e) => {
-      if (e.extensionId !== extension.id) return true
-      return listenerId != null && e.id !== listenerId
-    })
-  }
-
-  private addOnBeforeRequestListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    const wantsBlocking =
-      Array.isArray(extraInfoSpec) && extraInfoSpec.includes('blocking')
-    if (wantsBlocking) {
-      const perms = (extension.manifest?.permissions || []) as string[]
-      if (!perms.includes('webRequestBlocking')) return
-    }
-    const res = this.registerListener(this.onBeforeRequestListeners, extension, filter, extraInfoSpec)
-    this.onBeforeRequestListeners = res.list
-    return res.id
-  }
-
-  private removeOnBeforeRequestListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
-    this.onBeforeRequestListeners = this.removeListenerEntry(
-      this.onBeforeRequestListeners,
-      extension,
-      listenerId,
-    )
-  }
-
-  private addOnBeforeSendHeadersListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    const wantsBlocking =
-      Array.isArray(extraInfoSpec) && extraInfoSpec.includes('blocking')
-    if (wantsBlocking) {
-      const perms = (extension.manifest?.permissions || []) as string[]
-      if (!perms.includes('webRequestBlocking')) return
-    }
-    const res = this.registerListener(this.onBeforeSendHeadersListeners, extension, filter, extraInfoSpec)
-    this.onBeforeSendHeadersListeners = res.list
-    return res.id
-  }
-
-  private removeOnBeforeSendHeadersListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
-    this.onBeforeSendHeadersListeners = this.removeListenerEntry(
-      this.onBeforeSendHeadersListeners,
-      extension,
-      listenerId,
-    )
-  }
-
-  private addOnSendHeadersListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    const res = this.registerListener(this.onSendHeadersListeners, extension, filter, extraInfoSpec)
-    this.onSendHeadersListeners = res.list
-    return res.id
-  }
-
-  private removeOnSendHeadersListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
-    this.onSendHeadersListeners = this.removeListenerEntry(
-      this.onSendHeadersListeners,
-      extension,
-      listenerId,
-    )
-  }
-
-  private addOnHeadersReceivedListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    const wantsBlocking =
-      Array.isArray(extraInfoSpec) && extraInfoSpec.includes('blocking')
-    if (wantsBlocking) {
-      const perms = (extension.manifest?.permissions || []) as string[]
-      if (!perms.includes('webRequestBlocking')) return
-    }
-    const res = this.registerListener(this.onHeadersReceivedListeners, extension, filter, extraInfoSpec)
-    this.onHeadersReceivedListeners = res.list
-    return res.id
-  }
-
-  private removeOnHeadersReceivedListener = ({ extension }: ExtensionEvent, listenerId?: string) => {
-    this.onHeadersReceivedListeners = this.removeListenerEntry(
-      this.onHeadersReceivedListeners,
-      extension,
-      listenerId,
-    )
-  }
-
-  private addOnBeforeRedirectListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    this.onBeforeRedirectListeners = this.onBeforeRedirectListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onBeforeRedirectListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
-  }
-
-  private removeOnBeforeRedirectListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onBeforeRedirectListeners = this.onBeforeRedirectListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-  }
-
-  private addOnResponseStartedListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    this.onResponseStartedListeners = this.onResponseStartedListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onResponseStartedListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
-  }
-
-  private removeOnResponseStartedListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onResponseStartedListeners = this.onResponseStartedListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-  }
-
-  private addOnCompletedListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    this.onCompletedListeners = this.onCompletedListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onCompletedListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
-  }
-
-  private removeOnCompletedListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onCompletedListeners = this.onCompletedListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-  }
-
-  private addOnErrorOccurredListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-    this.onErrorOccurredListeners = this.onErrorOccurredListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onErrorOccurredListeners.push({
-      id: `wr-${++this.listenerIdCounter}`,
-      extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
-  }
-
-  private removeOnErrorOccurredListener = ({ extension }: ExtensionEvent) => {
-    if (!extension) return
-    this.onErrorOccurredListeners = this.onErrorOccurredListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-  }
-
-  private addOnAuthRequiredListener = (
-    { extension }: ExtensionEvent,
-    filter: chrome.webRequest.RequestFilter,
-    extraInfoSpec?: string[],
-  ) => {
-    if (!filter?.urls || !Array.isArray(filter.urls)) return
-
-    const wantsBlocking =
-      Array.isArray(extraInfoSpec) &&
-      (extraInfoSpec.includes('blocking') || extraInfoSpec.includes('asyncBlocking'))
-    if (wantsBlocking) {
-      const perms = (extension.manifest?.permissions || []) as string[]
-      if (!perms.includes('webRequestBlocking') && !perms.includes('webRequestAuthProvider')) {
-        return
+    const spec: string[] = Array.isArray(extraInfoSpec)
+      ? extraInfoSpec.filter((s: unknown): s is string => typeof s === 'string').slice(0, 16)
+      : []
+    let blocking = false
+    if (BLOCKING_EVENTS.has(name)) {
+      if (name === 'onAuthRequired') {
+        blocking = spec.includes('blocking') || spec.includes('asyncBlocking')
+        if (blocking && !this.hasPermission(extension, 'webRequestBlocking') && !this.hasPermission(extension, 'webRequestAuthProvider')) {
+          return
+        }
+      } else {
+        blocking = spec.includes('blocking')
+        if (blocking && !this.hasPermission(extension, 'webRequestBlocking')) return
       }
     }
 
-    this.onAuthRequiredListeners = this.onAuthRequiredListeners.filter(
-      (e) => e.extensionId !== extension.id,
-    )
-    this.onAuthRequiredListeners.push({
+    const sender = event.sender as any
+    let senderKey = 'unknown'
+    try {
+      senderKey = event.type === 'service-worker' ? `sw:${sender?.scope}` : `frame:${sender?.id}`
+    } catch {}
+    // The renderer counts identical listeners in its context, so a restarted
+    // worker's first one replaces the old first one, and two alike both stay.
+    const nth = Number.isInteger(ordinal) && (ordinal as number) >= 0 ? (ordinal as number) : 0
+    const key = JSON.stringify([senderKey, clean, spec, nth])
+    const current = this.list(name)
+    const next = current.filter((e) => !(e.extensionId === extension.id && e.key === key))
+    if (next.filter((e) => e.extensionId === extension.id).length >= MAX_LISTENERS_PER_EXTENSION) return
+    const entry: ListenerEntry = {
       id: `wr-${++this.listenerIdCounter}`,
       extensionId: extension.id,
-      filter: { ...filter },
-      extraInfoSpec,
-    })
+      filter: clean,
+      extraInfoSpec: spec,
+      blocking,
+      key,
+    }
+    next.push(entry)
+    this.listeners.set(name, next)
+    if (event.type === 'frame' && typeof sender?.once === 'function' && !this.watchedSenders.has(sender)) {
+      this.watchedSenders.add(sender)
+      sender.once('destroyed', () => {
+        const prefix = JSON.stringify([senderKey]).slice(0, -1)
+        for (const each of EVENTS) {
+          this.listeners.set(each, this.list(each).filter((e) => !e.key.startsWith(prefix)))
+        }
+      })
+    }
+    return entry.id
   }
 
-  private removeOnAuthRequiredListener = ({ extension }: ExtensionEvent) => {
+  private removeListener(name: EventName, { extension }: ExtensionEvent, listenerId?: string) {
     if (!extension) return
-    this.onAuthRequiredListeners = this.onAuthRequiredListeners.filter(
-      (e) => e.extensionId !== extension.id,
+    this.listeners.set(
+      name,
+      this.list(name).filter((e) => {
+        if (e.extensionId !== extension.id) return true
+        return typeof listenerId === 'string' && e.id !== listenerId
+      }),
     )
   }
 
@@ -544,13 +334,12 @@ export class WebRequestAPI {
   ) => {
     const pending = this.pendingBlocking.get(`${stage}:${requestId}`)
     if (!pending) return
-    // New signature: (requestId, listenerId, result). Backwards compatible with (requestId, result).
-    const listenerId =
-      typeof listenerIdOrResult === 'string' ? listenerIdOrResult : extension.id
-    const result =
-      typeof listenerIdOrResult === 'string' ? maybeResult : listenerIdOrResult
-
-    pending.results.set(listenerId, result || {})
+    const listenerId = typeof listenerIdOrResult === 'string' ? listenerIdOrResult : extension.id
+    // Only the listener the event went to may answer for it.
+    const entry = this.list(stage as EventName).find((e) => e.id === listenerId)
+    if (typeof listenerIdOrResult === 'string' && entry && entry.extensionId !== extension.id) return
+    const result = typeof listenerIdOrResult === 'string' ? maybeResult : listenerIdOrResult
+    pending.results.set(listenerId, result && typeof result === 'object' ? result : {})
     if (pending.results.size >= pending.expectedCount) {
       this.settlePending(`${stage}:${requestId}`)
     }
@@ -573,7 +362,7 @@ export class WebRequestAPI {
       if (r.cancel === true) return { cancel: true }
     }
     for (const r of results.values()) {
-      if (r.redirectUrl && r.redirectUrl.length > 0) {
+      if (typeof r.redirectUrl === 'string' && r.redirectUrl.length > 0) {
         return { redirectUrl: r.redirectUrl }
       }
     }
@@ -650,9 +439,9 @@ export class WebRequestAPI {
     r: WebRequestBlockingResponse | undefined,
   ): { username: string; password: string } | undefined {
     if (!r || r.cancel === true) return undefined
-    const ac = r.authCredentials as { username?: string; password?: string } | undefined
+    const ac = r.authCredentials as { username?: unknown; password?: unknown } | undefined
     if (ac && (ac.username != null || ac.password != null)) {
-      return { username: ac.username ?? '', password: ac.password ?? '' }
+      return { username: String(ac.username ?? ''), password: String(ac.password ?? '') }
     }
     const any = r as Record<string, unknown>
     if (typeof any.username === 'string' || typeof any.password === 'string') {
@@ -679,6 +468,7 @@ export class WebRequestAPI {
     return {}
   }
 
+  /** Chrome's ResourceType for Electron's. */
   private normalizeResourceType(resourceType?: string): string {
     switch (resourceType) {
       case 'mainFrame':
@@ -686,195 +476,70 @@ export class WebRequestAPI {
       case 'subFrame':
         return 'sub_frame'
       case 'xhr':
+      case 'fetch':
       case 'xmlhttprequest':
         return 'xmlhttprequest'
-      case 'script':
+      case 'cspReport':
+        return 'csp_report'
+      case 'webSocket':
+      case 'websocket':
+        return 'websocket'
       case 'img':
       case 'image':
+        return 'image'
+      case 'script':
       case 'stylesheet':
       case 'font':
       case 'media':
-      case 'fetch':
-        return resourceType.toLowerCase()
+      case 'object':
       case 'ping':
-      case 'websocket':
-        return resourceType.toLowerCase()
+        return resourceType
       default:
         return 'other'
     }
   }
 
-  private filterDetailsForListener(
-    details: WebRequestDetails,
-    extraInfoSpec?: string[],
-  ): WebRequestDetails {
-    if (!Array.isArray(extraInfoSpec) || extraInfoSpec.length === 0) {
-      const { requestHeaders, responseHeaders, requestBody, ...rest } = details
-      return { ...rest }
-    }
-
-    const includes = (key: string) => extraInfoSpec.includes(key)
-
-    const includeReqHeaders = includes('requestHeaders') || includes('extraHeaders')
-    const includeResHeaders = includes('responseHeaders') || includes('extraHeaders')
-    const includeRequestBody = includes('requestBody')
-
-    const clone: WebRequestDetails = { ...details }
-
-    if (!includeReqHeaders && 'requestHeaders' in clone) {
-      delete clone.requestHeaders
-    }
-    if (!includeResHeaders && 'responseHeaders' in clone) {
-      delete clone.responseHeaders
-    }
-    if (!includeRequestBody && 'requestBody' in clone) {
-      delete clone.requestBody
-    }
-
-    return clone
-  }
-
-  private getOrCreateRequestId(details: ElectronRequestDetails): string | undefined {
-    if (details.id != null) {
-      return String(details.id)
-    }
-    return undefined
-  }
-
   /**
-   * Referrer is often empty under strict referrer policies; DNR rules then mis-classify
-   * first-party subresources as third-party. Fall back to the requesting frame URL or tab URL.
-   *
-   * For webview requests, the most reliable source is details.webContents.mainFrame?.url
-   * (available Electron >= 25), which exposes the top-level page URL even when the
-   * referrer is stripped and the frame object is null for subresource requests.
+   * The page a request came from, for declarativeNetRequest. Referrers are
+   * often stripped, so the requesting frame and then the tab stand in.
    */
-  private resolveInitiator(details: ElectronRequestDetails): string | undefined {
+  private resolveDocumentUrl(details: ElectronRequestDetails): string | undefined {
+    const web = (url: unknown): boolean =>
+      typeof url === 'string' && (url.startsWith('http://') || url.startsWith('https://'))
     const ref = details.referrer
-    if (typeof ref === 'string' && ref.length > 0) {
-      try {
-        const u = new URL(ref)
-        if (u.protocol === 'http:' || u.protocol === 'https:') {
-          return ref
-        }
-      } catch {
-        /* continue */
-      }
-    }
-
-    // Fast path: mainFrame.url is the most reliable source for webview subresource requests.
+    if (web(ref)) return ref as string
     try {
       const mf = (details.webContents as any)?.mainFrame
-      if (mf && typeof mf.url === 'string') {
-        if (mf.url.startsWith('http://') || mf.url.startsWith('https://') || mf.url.startsWith('chrome-extension://')) {
-          return mf.url
-        }
+      if (mf && (web(mf.url) || (typeof mf.url === 'string' && mf.url.startsWith('chrome-extension://')))) {
+        return mf.url
       }
-    } catch {
-      /* continue */
-    }
-
+    } catch {}
     try {
-      const frameUrl = details.frame?.url
-      if (typeof frameUrl === 'string' && (frameUrl.startsWith('http://') || frameUrl.startsWith('https://'))) {
-        return frameUrl
-      }
-    } catch {
-      /* continue */
-    }
-
-    // Fallback: webContents.getURL() — reliable once the webview has navigated.
+      if (web(details.frame?.url)) return details.frame!.url
+    } catch {}
+    const wc =
+      details.webContents ??
+      (typeof details.webContentsId === 'number' ? electronWebContents.fromId(details.webContentsId) : undefined)
     try {
-      const wc = details.webContents
-      if (wc && typeof (wc as any).isDestroyed === 'function' && !(wc as any).isDestroyed()) {
-        const tabUrl = wc.getURL()
-        if (tabUrl.startsWith('http://') || tabUrl.startsWith('https://')) {
-          return tabUrl
-        }
+      if (wc && !wc.isDestroyed()) {
+        const url = wc.getURL()
+        if (web(url) || url.startsWith('chrome-extension://')) return url
       }
-    } catch {
-      /* continue */
-    }
-
-    const wid = details.webContentsId
-    if (typeof wid === 'number') {
-      try {
-        const wc = electronWebContents.fromId(wid)
-        if (wc && !wc.isDestroyed()) {
-          const tabUrl = wc.getURL()
-          if (tabUrl.startsWith('http://') || tabUrl.startsWith('https://')) {
-            return tabUrl
-          }
-        }
-      } catch {
-        /* continue */
-      }
-    }
-
-    // chrome-extension:// initiator fallbacks (for extension-to-extension requests)
-    if (typeof ref === 'string' && ref.startsWith('chrome-extension://')) {
-      try {
-        new URL(ref)
-        return ref
-      } catch {
-        /* continue */
-      }
-    }
+    } catch {}
+    if (typeof ref === 'string' && ref.startsWith('chrome-extension://')) return ref
     try {
-      const frameUrl = details.frame?.url
-      if (typeof frameUrl === 'string' && frameUrl.startsWith('chrome-extension://')) {
-        return frameUrl
-      }
-    } catch {
-      /* continue */
-    }
-    try {
-      const wc = details.webContents
-      if (wc && typeof (wc as any).isDestroyed === 'function' && !(wc as any).isDestroyed()) {
-        const u = wc.getURL()
-        if (u.startsWith('chrome-extension://')) return u
-      }
-    } catch {
-      /* continue */
-    }
-    if (typeof wid === 'number') {
-      try {
-        const wc = electronWebContents.fromId(wid)
-        if (wc && !wc.isDestroyed()) {
-          const u = wc.getURL()
-          if (u.startsWith('chrome-extension://')) return u
-        }
-      } catch {
-        /* continue */
-      }
-    }
+      const url = details.frame?.url
+      if (typeof url === 'string' && url.startsWith('chrome-extension://')) return url
+    } catch {}
+    if (details.initiatorOrigin && details.initiatorOrigin !== 'null') return details.initiatorOrigin + '/'
     return undefined
-  }
-
-  private extensionIdFromChromeInitiator(initiator?: string): string | undefined {
-    if (!initiator || !initiator.startsWith('chrome-extension://')) return undefined
-    try {
-      const h = new URL(initiator).hostname
-      return h || undefined
-    } catch {
-      return undefined
-    }
-  }
-
-  private scopeListenersToInitiatorExtension<T extends { extensionId: string }>(
-    listeners: T[],
-    initiator?: string,
-  ): T[] {
-    const ext = this.extensionIdFromChromeInitiator(initiator)
-    if (!ext) return listeners
-    return listeners.filter((e) => e.extensionId === ext)
   }
 
   private buildDetails(
     details: ElectronRequestDetails,
     opts?: { includeRequestBody?: boolean },
   ): WebRequestDetails {
-    const rawWebContentsId = (details as any).webContentsId
+    const rawWebContentsId = details.webContentsId
     const tabId =
       typeof rawWebContentsId === 'number'
         ? this.ctx.store.getTabIdForWebContentsId(rawWebContentsId)
@@ -883,58 +548,80 @@ export class WebRequestAPI {
       typeof rawWebContentsId === 'number'
         ? this.ctx.store.getWindowIdForWebContentsId(rawWebContentsId)
         : undefined
-
-    const requestId = this.getOrCreateRequestId(details)
-    const frameId = typeof details.frameId === 'number' ? details.frameId : 0
-    const documentId = tabId >= 0 ? this.ctx.store.getDocumentId(tabId, frameId) : undefined
-
-    // Chrome reports the document a subresource was requested from. Content
-    // blockers need it to tell first-party from third-party; without it every
-    // request looks origin-less and generic rules match far too much.
     const type = this.normalizeResourceType(details.resourceType)
-    let documentUrl: string | undefined
-    const frameAncestors: { url: string; frameId: number }[] = []
-    if (type !== 'main_frame') {
-      const frame = details.frame
+
+    // The frame that made the request; for a frame's own navigation, that frame.
+    let frame: Electron.WebFrameMain | null = null
+    try {
+      frame = details.frame && !details.frame.isDestroyed() ? details.frame : null
+    } catch {}
+    const idOf = (f: Electron.WebFrameMain) => (f === f.top ? 0 : f.frameTreeNodeId)
+    let frameId = -1
+    let parentFrameId = -1
+    let frameType: string | undefined
+    let documentId: string | undefined
+    let parentDocumentId: string | undefined
+    if (type === 'main_frame') {
+      frameId = 0
+      frameType = 'outermost_frame'
+    } else if (frame) {
       try {
-        if (frame && !frame.isDestroyed()) {
-          documentUrl = frame.url || undefined
-          for (let parent = frame.parent; parent && !parent.isDestroyed(); parent = parent.parent) {
-            frameAncestors.push({
-              url: parent.url,
-              frameId: parent === parent.top ? 0 : parent.routingId,
-            })
-          }
+        frameId = idOf(frame)
+        parentFrameId = frame.parent ? idOf(frame.parent) : -1
+        frameType = frame.parent ? 'sub_frame' : 'outermost_frame'
+        if (type === 'sub_frame' && frame.parent) {
+          parentDocumentId = tabId >= 0 ? this.ctx.store.getDocumentId(tabId, parentFrameId) : undefined
+        } else {
+          documentId = tabId >= 0 ? this.ctx.store.getDocumentId(tabId, frameId) : undefined
+          if (frame.parent && tabId >= 0) parentDocumentId = this.ctx.store.getDocumentId(tabId, parentFrameId)
         }
-      } catch {
-        // Frame went away mid-request; fall back to the initiator below.
-      }
-      if (!documentUrl) {
-        const initiator = this.resolveInitiator(details)
-        if (initiator && initiator !== 'null') documentUrl = initiator
-      }
+      } catch {}
+    } else if (tabId >= 0) {
+      frameId = 0
+      frameType = 'outermost_frame'
+      documentId = this.ctx.store.getDocumentId(tabId, 0)
+    }
+
+    let initiator: string | undefined
+    if (typeof details.initiatorOrigin === 'string' && details.initiatorOrigin) {
+      initiator = details.initiatorOrigin
+    } else if (type !== 'main_frame') {
+      initiator = originOf(this.resolveDocumentUrl(details))
+    }
+
+    const requestId = details.id != null ? String(details.id) : undefined
+    let ip = details.ip
+    if (!ip && requestId) ip = this.requestIps.get(requestId)
+    if (!ip) {
+      try {
+        const host = new URL(details.url || '').hostname
+        if (isIpLiteral(host)) ip = host.replace(/^\[|\]$/g, '')
+      } catch {}
     }
 
     return {
-      documentUrl,
-      frameAncestors: frameAncestors.length ? frameAncestors : undefined,
       url: details.url || '',
       method: details.method || 'GET',
       tabId,
       windowId,
       requestId,
       documentId,
+      parentDocumentId,
+      frameType,
+      documentLifecycle: frameType ? 'active' : undefined,
       frameId,
-      parentFrameId:
-        typeof details.parentFrameId === 'number' ? details.parentFrameId : -1,
+      parentFrameId,
       type,
       timeStamp: details.timestamp != null ? details.timestamp : Date.now(),
-      initiator: this.resolveInitiator(details),
+      initiator,
+      documentUrl: type === 'main_frame' ? undefined : this.resolveDocumentUrl(details),
       requestBody: opts?.includeRequestBody ? this.normalizeRequestBody(details) : undefined,
       requestHeaders: toChromeHeaders(details.requestHeaders),
       responseHeaders: toChromeHeaders(details.responseHeaders),
       statusCode: details.statusCode,
-      ip: details.ip,
+      statusLine: details.statusLine,
+      redirectUrl: details.redirectURL,
+      ip,
       fromCache: details.fromCache,
       error: details.error,
       isProxy: details.isProxy,
@@ -942,6 +629,73 @@ export class WebRequestAPI {
       realm: details.realm,
       challenger: details.challenger,
     }
+  }
+
+  /** The details Chrome gives a listener of `event`, key for key. */
+  private toChrome(event: EventName, info: WebRequestDetails, spec: string[]): Record<string, any> {
+    const out: Record<string, any> = {
+      requestId: info.requestId,
+      url: info.url,
+      method: info.method,
+      frameId: info.frameId ?? -1,
+      parentFrameId: info.parentFrameId ?? -1,
+      tabId: info.tabId,
+      type: info.type,
+      timeStamp: info.timeStamp,
+    }
+    if (info.documentId) out.documentId = info.documentId
+    if (info.parentDocumentId) out.parentDocumentId = info.parentDocumentId
+    if (info.frameType) out.frameType = info.frameType
+    if (info.documentLifecycle) out.documentLifecycle = info.documentLifecycle
+    if (info.initiator) out.initiator = info.initiator
+    const extra = spec.includes('extraHeaders')
+    const wantsResponseHeaders = spec.includes('responseHeaders') || extra
+    const status = () => {
+      if (typeof info.statusCode === 'number') out.statusCode = info.statusCode
+      out.statusLine = info.statusLine ?? (typeof info.statusCode === 'number' ? `HTTP/1.1 ${info.statusCode}` : '')
+    }
+    const response = () => {
+      if (info.ip) out.ip = info.ip
+      out.fromCache = !!info.fromCache
+    }
+    switch (event) {
+      case 'onBeforeRequest':
+        if (spec.includes('requestBody') && info.requestBody) out.requestBody = info.requestBody
+        break
+      case 'onBeforeSendHeaders':
+      case 'onSendHeaders':
+        if ((spec.includes('requestHeaders') || extra) && info.requestHeaders) out.requestHeaders = info.requestHeaders
+        break
+      case 'onHeadersReceived':
+        status()
+        if (wantsResponseHeaders && info.responseHeaders) out.responseHeaders = info.responseHeaders
+        break
+      case 'onAuthRequired':
+        status()
+        out.scheme = info.scheme ?? ''
+        if (info.realm) out.realm = info.realm
+        out.challenger = info.challenger ?? { host: '', port: 0 }
+        out.isProxy = !!info.isProxy
+        if (wantsResponseHeaders && info.responseHeaders) out.responseHeaders = info.responseHeaders
+        break
+      case 'onResponseStarted':
+      case 'onCompleted':
+        response()
+        status()
+        if (wantsResponseHeaders && info.responseHeaders) out.responseHeaders = info.responseHeaders
+        break
+      case 'onBeforeRedirect':
+        response()
+        status()
+        out.redirectUrl = info.redirectUrl ?? ''
+        if (wantsResponseHeaders && info.responseHeaders) out.responseHeaders = info.responseHeaders
+        break
+      case 'onErrorOccurred':
+        response()
+        out.error = info.error ?? 'net::ERR_FAILED'
+        break
+    }
+    return out
   }
 
   private normalizeRequestBody(
@@ -995,8 +749,7 @@ export class WebRequestAPI {
       } else if (text.includes('Content-Disposition: form-data')) {
         // Best-effort multipart/form-data parsing.
         const firstLineEnd = text.indexOf('\r\n')
-        const firstLine =
-          firstLineEnd !== -1 ? text.slice(0, firstLineEnd) : ''
+        const firstLine = firstLineEnd !== -1 ? text.slice(0, firstLineEnd) : ''
         const boundaryMatch = firstLine.match(/^-+([^\r\n]+)/)
         const boundary = boundaryMatch && boundaryMatch[1]
         if (boundary) {
@@ -1025,13 +778,6 @@ export class WebRequestAPI {
     return body as any
   }
 
-  /** Map our normalized type strings to Chrome filter ResourceType labels where they differ. */
-  private typeForRequestFilterMatch(detailType?: string): string {
-    const t = detailType || 'other'
-    if (t === 'img') return 'image'
-    return t
-  }
-
   private listenerMatchesRequest(details: WebRequestDetails, filter: chrome.webRequest.RequestFilter) {
     const urls = filter.urls
     if (!urls || urls.length === 0) return false
@@ -1039,8 +785,7 @@ export class WebRequestAPI {
 
     const types = filter.types
     if (types && types.length > 0) {
-      const t = this.typeForRequestFilterMatch(details.type)
-      if (!types.includes(t as chrome.webRequest.ResourceType)) return false
+      if (!types.includes((details.type || 'other') as chrome.webRequest.ResourceType)) return false
     }
 
     if (typeof filter.tabId === 'number' && filter.tabId !== details.tabId) return false
@@ -1054,8 +799,43 @@ export class WebRequestAPI {
     return true
   }
 
-  private findMatchingListeners(list: ListenerEntry[], details: WebRequestDetails): ListenerEntry[] {
-    return list.filter((entry) => this.listenerMatchesRequest(details, entry.filter))
+  /**
+   * Chrome shows an extension a request only with host access to its URL,
+   * and, unless it is a top-level navigation, to the origin that made it.
+   * That keeps other extensions' requests and those of browser pages out of
+   * sight. Requests the browser makes for itself have neither a page nor an
+   * origin, and are not shown at all.
+   */
+  private visibleTo(extensionId: string, info: WebRequestDetails) {
+    const sessionExtensions = this.ctx.session.extensions || this.ctx.session
+    const extension = sessionExtensions.getExtension?.(extensionId)
+    const permissions = this.ctx.permissions
+    if (!permissions) return true
+    if (!extension) return false
+    const tabId = info.tabId >= 0 ? info.tabId : undefined
+    if (!permissions.hasHostAccess(extension, info.url, { tabId })) return false
+    const navigation = info.type === 'main_frame'
+    if (!navigation) {
+      if (!info.initiator) {
+        if (info.tabId < 0 && !info.frameType) return false
+      } else if (info.initiator !== 'null') {
+        if (!permissions.hasHostAccess(extension, info.initiator + '/', { tabId })) return false
+      }
+    }
+    return true
+  }
+
+  private findMatchingListeners(name: EventName, details: WebRequestDetails): ListenerEntry[] {
+    const visible = new Map<string, boolean>()
+    return this.list(name).filter((entry) => {
+      if (!this.listenerMatchesRequest(details, entry.filter)) return false
+      let ok = visible.get(entry.extensionId)
+      if (ok === undefined) {
+        ok = this.visibleTo(entry.extensionId, details)
+        visible.set(entry.extensionId, ok)
+      }
+      return ok
+    })
   }
 
   private mergeRequestHeaders(
@@ -1071,7 +851,7 @@ export class WebRequestAPI {
         for (const [key, values] of Object.entries(fromChromeHeaders(r.requestHeaders))) {
           base[key] = values.join(', ')
         }
-      } else if (r && r.requestHeaders) {
+      } else if (r && r.requestHeaders && typeof r.requestHeaders === 'object') {
         Object.assign(base, r.requestHeaders as Record<string, string | string[]>)
       }
     }
@@ -1089,7 +869,7 @@ export class WebRequestAPI {
       if (r && Array.isArray(r.responseHeaders)) {
         for (const key of Object.keys(base)) delete base[key]
         Object.assign(base, fromChromeHeaders(r.responseHeaders))
-      } else if (r && r.responseHeaders) {
+      } else if (r && r.responseHeaders && typeof r.responseHeaders === 'object') {
         Object.assign(base, r.responseHeaders as Record<string, string | string[]>)
       }
     }
@@ -1097,15 +877,53 @@ export class WebRequestAPI {
     return Object.keys(base).length > 0 ? { responseHeaders: base } : {}
   }
 
+  /**
+   * Sends `event` to every matching listener, each with its own id. With
+   * blocking listeners among them, resolves once each has answered (or the
+   * time is up) with the merged answer; otherwise at once with {}.
+   */
+  private dispatch<T>(
+    event: EventName,
+    info: WebRequestDetails,
+    merge?: (results: Map<string, any>) => T,
+  ): Promise<T | {}> {
+    const matching = this.findMatchingListeners(event, info)
+    if (matching.length === 0) return Promise.resolve({})
+    const requestId = info.requestId || `wr-${++this.requestIdCounter}`
+    const payload = { ...info, requestId }
+    const blocking = merge ? matching.filter((e) => e.blocking) : []
+    const send = () => {
+      for (const entry of matching) {
+        this.ctx.router.sendEvent(entry.extensionId, `webRequest.${event}`, {
+          ...this.toChrome(event, payload, entry.extraInfoSpec),
+          listenerId: entry.id,
+        })
+      }
+    }
+    if (blocking.length === 0 || !merge) {
+      send()
+      return Promise.resolve({})
+    }
+    return new Promise<T>((resolve) => {
+      const key = `${event}:${requestId}`
+      const timeoutHandle = setTimeout(() => this.settlePending(key), BLOCKING_RESPONSE_TIMEOUT_MS)
+      this.pendingBlocking.set(key, {
+        resolve: resolve as any,
+        results: new Map(),
+        expectedCount: blocking.length,
+        timeoutHandle,
+        merge: merge as any,
+      })
+      send()
+    })
+  }
+
   async notifyOnBeforeRequest(
     details: Electron.OnBeforeRequestListenerDetails,
   ): Promise<WebRequestBlockingResponse> {
-    const url = details.url
-    if (!url) return {}
-
-    const probe = this.buildDetails(details as unknown as ElectronRequestDetails, {
-      includeRequestBody: false,
-    })
+    if (!details?.url) return {}
+    const raw = details as unknown as ElectronRequestDetails
+    const probe = this.buildDetails(raw)
 
     if (this.dnr) {
       const dnrResult = this.dnr.evaluateOnBeforeRequest(probe)
@@ -1116,445 +934,79 @@ export class WebRequestAPI {
       }
     }
 
-    const matching = this.scopeListenersToInitiatorExtension(
-      this.findMatchingListeners(this.onBeforeRequestListeners, probe),
-      probe.initiator,
-    )
-    if (matching.length === 0) return {}
-
-    const wantsRequestBody = matching.some((e) => {
-      if (!Array.isArray(e.extraInfoSpec)) return false
-      return e.extraInfoSpec.includes('requestBody')
-    })
-    const payloadBase = wantsRequestBody
-      ? this.buildDetails(details as unknown as ElectronRequestDetails, {
-          includeRequestBody: true,
-    })
-      : probe
-
-    const requestId =
-      payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId = { ...payloadBase, requestId }
-
-    const hasBlocking = matching.some((e) =>
-      Array.isArray(e.extraInfoSpec) && e.extraInfoSpec.includes('blocking'),
-    )
-
-    if (!hasBlocking) {
-      for (const entry of matching) {
-        const filtered = this.filterDetailsForListener(
-          payloadWithId,
-          entry.extraInfoSpec,
-        )
-        this.ctx.router.sendEvent(
-          entry.extensionId,
-          'webRequest.onBeforeRequest',
-          filtered,
-        )
-      }
-      return {}
-    }
-
-    const blockingEntries = matching.filter(
-      (e) => Array.isArray(e.extraInfoSpec) && e.extraInfoSpec.includes('blocking'),
-    )
-
-    return new Promise<WebRequestBlockingResponse>((resolve) => {
-      const timeoutHandle = setTimeout(() => {
-        this.settlePending(`onBeforeRequest:${requestId}`)
-      }, BLOCKING_RESPONSE_TIMEOUT_MS)
-
-
-      this.pendingBlocking.set(`onBeforeRequest:${requestId}`, {
-        resolve,
-        results: new Map(),
-        expectedCount: blockingEntries.length,
-        timeoutHandle,
-        merge: (results) => this.mergeCancelOrRedirect(results as Map<string, WebRequestBlockingResponse>),
-      })
-
-      for (const entry of matching) {
-        const isBlocking =
-          Array.isArray(entry.extraInfoSpec) && entry.extraInfoSpec.includes('blocking')
-
-        const toSend = isBlocking
-          ? ({ ...payloadWithId, listenerId: entry.id } as any)
-          : payloadWithId
-
-        const filtered = this.filterDetailsForListener(
-          toSend,
-          entry.extraInfoSpec,
-        )
-        this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onBeforeRequest', filtered)
-      }
-    })
+    const wantsBody = this.list('onBeforeRequest').some((e) => e.extraInfoSpec.includes('requestBody'))
+    const info = wantsBody ? this.buildDetails(raw, { includeRequestBody: true }) : probe
+    return (await this.dispatch('onBeforeRequest', info, (results) =>
+      this.mergeCancelOrRedirect(results as Map<string, WebRequestBlockingResponse>),
+    )) as WebRequestBlockingResponse
   }
 
   async notifyOnBeforeSendHeaders(
     details: Electron.OnBeforeSendHeadersListenerDetails,
   ): Promise<{ requestHeaders?: Record<string, string | string[]> }> {
-    const url = details.url
-    if (!url) return {}
-
-    const baseDetails = this.buildDetails(details as unknown as ElectronRequestDetails)
-    const payloadBase: WebRequestDetails = {
-      ...baseDetails,
-      requestHeaders: toChromeHeaders(details.requestHeaders),
-    }
-
-    const matching = this.scopeListenersToInitiatorExtension(
-      this.findMatchingListeners(this.onBeforeSendHeadersListeners, payloadBase),
-      payloadBase.initiator,
-    )
-    if (matching.length === 0) return {}
-
-    const hasBlocking = matching.some((e) => {
-      if (!Array.isArray(e.extraInfoSpec)) return false
-      return e.extraInfoSpec.includes('blocking')
-    })
-
-    const requestId =
-      payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId: WebRequestDetails = { ...payloadBase, requestId }
-
-    if (!hasBlocking) {
-      for (const entry of matching) {
-        const filtered = this.filterDetailsForListener(
-          payloadWithId,
-          entry.extraInfoSpec,
-        )
-        this.ctx.router.sendEvent(
-          entry.extensionId,
-          'webRequest.onBeforeSendHeaders',
-          filtered,
-        )
-      }
-      return {}
-    }
-
-    const blockingEntries = matching.filter((e) => {
-      if (!Array.isArray(e.extraInfoSpec)) return false
-      return e.extraInfoSpec.includes('blocking')
-    })
-
-    return new Promise<{ requestHeaders?: Record<string, string | string[]> }>((resolve) => {
-      const timeoutHandle = setTimeout(() => {
-        this.settlePending(`onBeforeSendHeaders:${requestId}`)
-      }, BLOCKING_RESPONSE_TIMEOUT_MS)
-
-      this.pendingBlocking.set(`onBeforeSendHeaders:${requestId}`, {
-        resolve,
-        results: new Map(),
-        expectedCount: blockingEntries.length,
-        timeoutHandle,
-        merge: (results) =>
-          this.mergeRequestHeaders(details.requestHeaders as any, results),
-      })
-
-      for (const entry of matching) {
-        const isBlocking = Array.isArray(entry.extraInfoSpec)
-          ? entry.extraInfoSpec.includes('blocking')
-          : false
-
-        const toSend = isBlocking
-          ? ({ ...payloadWithId, listenerId: entry.id } as any)
-          : payloadWithId
-
-        const filtered = this.filterDetailsForListener(toSend, entry.extraInfoSpec)
-        this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onBeforeSendHeaders', filtered)
-      }
-    })
+    if (!details?.url) return {}
+    const info = this.buildDetails(details as unknown as ElectronRequestDetails)
+    const result = (await this.dispatch('onBeforeSendHeaders', info, (results) =>
+      this.mergeRequestHeaders(details.requestHeaders as any, results),
+    )) as { requestHeaders?: Record<string, string | string[]> }
+    // declarativeNetRequest changes headers after the listeners, as in Chrome.
+    const changed = this.dnr?.modifyHeaders('request', info, result.requestHeaders ?? (details.requestHeaders as any) ?? {})
+    return changed ? { requestHeaders: changed } : result
   }
 
   async notifyOnSendHeaders(details: Electron.OnSendHeadersListenerDetails): Promise<void> {
-    const url = details.url
-    if (!url) return
-
-    const payloadBase: WebRequestDetails = {
-      ...this.buildDetails(details as unknown as ElectronRequestDetails),
-      requestHeaders: toChromeHeaders(details.requestHeaders),
-    }
-
-    const matching = this.findMatchingListeners(this.onSendHeadersListeners, payloadBase)
-    if (matching.length === 0) return
-
-    const requestId =
-      payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId = { ...payloadBase, requestId }
-
-    for (const entry of matching) {
-      const filtered = this.filterDetailsForListener(
-        payloadWithId,
-        entry.extraInfoSpec,
-      )
-      this.ctx.router.sendEvent(
-        entry.extensionId,
-        'webRequest.onSendHeaders',
-        filtered,
-      )
-    }
+    if (!details?.url) return
+    await this.dispatch('onSendHeaders', this.buildDetails(details as unknown as ElectronRequestDetails))
   }
 
   async notifyOnHeadersReceived(
     details: Electron.OnHeadersReceivedListenerDetails,
   ): Promise<{ responseHeaders?: Record<string, string | string[]> }> {
-    const url = details.url
-    if (!url) return {}
-
-    const baseDetails = this.buildDetails(details as unknown as ElectronRequestDetails)
-    const payloadBase: WebRequestDetails = {
-      ...baseDetails,
-      statusCode: (details as any).statusCode,
-      responseHeaders: toChromeHeaders(details.responseHeaders),
-    }
-
-    const matching = this.scopeListenersToInitiatorExtension(
-      this.findMatchingListeners(this.onHeadersReceivedListeners, payloadBase),
-      payloadBase.initiator,
-    )
-    if (matching.length === 0) return {}
-
-    const hasBlocking = matching.some((e) => {
-      if (!Array.isArray(e.extraInfoSpec)) return false
-      return e.extraInfoSpec.includes('blocking')
-    })
-
-    const requestId =
-      payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId: WebRequestDetails = { ...payloadBase, requestId }
-
-    if (!hasBlocking) {
-      for (const entry of matching) {
-        const filtered = this.filterDetailsForListener(
-          payloadWithId,
-          entry.extraInfoSpec,
-        )
-        this.ctx.router.sendEvent(
-          entry.extensionId,
-          'webRequest.onHeadersReceived',
-          filtered,
-        )
-      }
-      return {}
-    }
-
-    const blockingEntries = matching.filter((e) => {
-      if (!Array.isArray(e.extraInfoSpec)) return false
-      return e.extraInfoSpec.includes('blocking')
-    })
-
-    return new Promise<{ responseHeaders?: Record<string, string | string[]> }>((resolve) => {
-      const timeoutHandle = setTimeout(() => {
-        this.settlePending(`onHeadersReceived:${requestId}`)
-      }, BLOCKING_RESPONSE_TIMEOUT_MS)
-
-      this.pendingBlocking.set(`onHeadersReceived:${requestId}`, {
-        resolve,
-        results: new Map(),
-        expectedCount: blockingEntries.length,
-        timeoutHandle,
-        merge: (results) =>
-          this.mergeResponseHeaders(details.responseHeaders as any, results),
-      })
-
-      for (const entry of matching) {
-        const isBlocking = Array.isArray(entry.extraInfoSpec)
-          ? entry.extraInfoSpec.includes('blocking')
-          : false
-
-        const toSend = isBlocking
-          ? ({ ...payloadWithId, listenerId: entry.id } as any)
-          : payloadWithId
-
-        const filtered = this.filterDetailsForListener(toSend, entry.extraInfoSpec)
-        this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onHeadersReceived', filtered)
-      }
-    })
+    if (!details?.url) return {}
+    const info = this.buildDetails(details as unknown as ElectronRequestDetails)
+    const result = (await this.dispatch('onHeadersReceived', info, (results) =>
+      this.mergeResponseHeaders(details.responseHeaders as any, results),
+    )) as { responseHeaders?: Record<string, string | string[]> }
+    const changed = this.dnr?.modifyHeaders('response', info, result.responseHeaders ?? (details.responseHeaders as any) ?? {})
+    return changed ? { responseHeaders: changed } : result
   }
 
-  async notifyOnBeforeRedirect(
-    details: Electron.OnBeforeRedirectListenerDetails,
-  ): Promise<void> {
-    const url = details.url
-    if (!url) return
-
-    const payloadBase: WebRequestDetails = {
-      ...this.buildDetails(details as unknown as ElectronRequestDetails),
-      redirectUrl: details.redirectURL,
-      statusCode: (details as any).statusCode,
-      responseHeaders: toChromeHeaders(details.responseHeaders),
-      ip: (details as any).ip,
-      fromCache: (details as any).fromCache,
+  async notifyOnBeforeRedirect(details: Electron.OnBeforeRedirectListenerDetails): Promise<void> {
+    if (!details?.url) return
+    const raw = details as unknown as ElectronRequestDetails
+    if (raw.ip && raw.id != null) {
+      this.requestIps.set(String(raw.id), raw.ip)
+      // Only the last few are worth keeping; a request ends long before.
+      if (this.requestIps.size > 500) this.requestIps.delete(this.requestIps.keys().next().value!)
     }
-
-    const matching = this.findMatchingListeners(this.onBeforeRedirectListeners, payloadBase)
-    if (matching.length === 0) return
-
-    const requestId = payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId = { ...payloadBase, requestId }
-
-    for (const entry of matching) {
-      const filtered = this.filterDetailsForListener(payloadWithId, entry.extraInfoSpec)
-      this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onBeforeRedirect', {
-        ...filtered,
-        redirectUrl: payloadBase.redirectUrl,
-      })
-    }
+    await this.dispatch('onBeforeRedirect', this.buildDetails(raw))
   }
 
-  async notifyOnResponseStarted(
-    details: Electron.OnResponseStartedListenerDetails,
-  ): Promise<void> {
-    const url = details.url
-    if (!url) return
-
-    const payloadBase: WebRequestDetails = {
-      ...this.buildDetails(details as unknown as ElectronRequestDetails),
-      statusCode: (details as any).statusCode,
-      responseHeaders: toChromeHeaders(details.responseHeaders),
-      ip: (details as any).ip,
-      fromCache: (details as any).fromCache,
-    }
-
-    const matching = this.findMatchingListeners(this.onResponseStartedListeners, payloadBase)
-    if (matching.length === 0) return
-
-    const requestId =
-      payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId = { ...payloadBase, requestId }
-
-    for (const entry of matching) {
-      const filtered = this.filterDetailsForListener(
-        payloadWithId,
-        entry.extraInfoSpec,
-      )
-      this.ctx.router.sendEvent(
-        entry.extensionId,
-        'webRequest.onResponseStarted',
-        filtered,
-      )
-    }
+  async notifyOnResponseStarted(details: Electron.OnResponseStartedListenerDetails): Promise<void> {
+    if (!details?.url) return
+    await this.dispatch('onResponseStarted', this.buildDetails(details as unknown as ElectronRequestDetails))
   }
 
   async notifyOnCompleted(details: Electron.OnCompletedListenerDetails): Promise<void> {
-    const url = details.url
-    if (!url) return
-
-    const payloadBase: WebRequestDetails = {
-      ...this.buildDetails(details as unknown as ElectronRequestDetails),
-      statusCode: (details as any).statusCode,
-      responseHeaders: toChromeHeaders(details.responseHeaders),
-      ip: (details as any).ip,
-      fromCache: (details as any).fromCache,
-    }
-
-    const matching = this.findMatchingListeners(this.onCompletedListeners, payloadBase)
-    if (matching.length === 0) return
-
-    const requestId =
-      payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId = { ...payloadBase, requestId }
-
-    for (const entry of matching) {
-      const filtered = this.filterDetailsForListener(
-        payloadWithId,
-        entry.extraInfoSpec,
-      )
-      this.ctx.router.sendEvent(
-        entry.extensionId,
-        'webRequest.onCompleted',
-        filtered,
-      )
-    }
+    if (!details?.url) return
+    const raw = details as unknown as ElectronRequestDetails
+    await this.dispatch('onCompleted', this.buildDetails(raw))
+    if (raw.id != null) this.requestIps.delete(String(raw.id))
   }
 
-  async notifyOnErrorOccurred(
-    details: Electron.OnErrorOccurredListenerDetails,
-  ): Promise<void> {
-    const url = details.url
-    if (!url) return
-
-    const payloadBase: WebRequestDetails = {
-      ...this.buildDetails(details as unknown as ElectronRequestDetails),
-      error: (details as any).error,
-    }
-
-    const matching = this.findMatchingListeners(this.onErrorOccurredListeners, payloadBase)
-    if (matching.length === 0) return
-
-    const requestId =
-      payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId = { ...payloadBase, requestId }
-
-    for (const entry of matching) {
-      const filtered = this.filterDetailsForListener(
-        payloadWithId,
-        entry.extraInfoSpec,
-      )
-      this.ctx.router.sendEvent(
-        entry.extensionId,
-        'webRequest.onErrorOccurred',
-        filtered,
-      )
-    }
+  async notifyOnErrorOccurred(details: Electron.OnErrorOccurredListenerDetails): Promise<void> {
+    if (!details?.url) return
+    const raw = details as unknown as ElectronRequestDetails
+    await this.dispatch('onErrorOccurred', this.buildDetails(raw))
+    if (raw.id != null) this.requestIps.delete(String(raw.id))
   }
 
   async notifyOnAuthRequired(
     details: ElectronRequestDetails,
   ): Promise<{ cancel?: boolean; authCredentials?: { username: string; password: string } }> {
-    const url = details.url
-    if (!url) return {}
-
-    const payloadBase = this.buildDetails(details)
-    const matching = this.findMatchingListeners(this.onAuthRequiredListeners, payloadBase)
-    if (matching.length === 0) return {}
-
-    const hasBlocking = matching.some((e) => {
-      if (!Array.isArray(e.extraInfoSpec)) return false
-      return e.extraInfoSpec.includes('blocking') || e.extraInfoSpec.includes('asyncBlocking')
-    })
-
-    const requestId = payloadBase.requestId || `wr-${++this.requestIdCounter}`
-    const payloadWithId: WebRequestDetails = { ...payloadBase, requestId }
-
-    if (!hasBlocking) {
-      for (const entry of matching) {
-        const filtered = this.filterDetailsForListener(payloadWithId, entry.extraInfoSpec)
-        this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onAuthRequired', filtered)
-      }
-      return {}
-    }
-
-    const blockingEntries = matching.filter((e) => {
-      if (!Array.isArray(e.extraInfoSpec)) return false
-      return e.extraInfoSpec.includes('blocking') || e.extraInfoSpec.includes('asyncBlocking')
-    })
-
-    return new Promise<{ cancel?: boolean; authCredentials?: { username: string; password: string } }>((resolve) => {
-      const timeoutHandle = setTimeout(() => {
-        this.settlePending(`onAuthRequired:${requestId}`)
-      }, BLOCKING_RESPONSE_TIMEOUT_MS)
-
-      this.pendingBlocking.set(`onAuthRequired:${requestId}`, {
-        resolve,
-        results: new Map(),
-        expectedCount: blockingEntries.length,
-        timeoutHandle,
-        merge: (results) => this.mergeAuthRequired(results as Map<string, WebRequestBlockingResponse>),
-      })
-
-      for (const entry of matching) {
-        const isBlocking = Array.isArray(entry.extraInfoSpec)
-          ? entry.extraInfoSpec.includes('blocking') || entry.extraInfoSpec.includes('asyncBlocking')
-          : false
-
-        const toSend = isBlocking
-          ? ({ ...payloadWithId, listenerId: entry.id } as any)
-          : payloadWithId
-
-        const filtered = this.filterDetailsForListener(toSend, entry.extraInfoSpec)
-        this.ctx.router.sendEvent(entry.extensionId, 'webRequest.onAuthRequired', filtered)
-      }
-    })
+    if (!details?.url) return {}
+    return this.dispatch('onAuthRequired', this.buildDetails(details), (results) =>
+      this.mergeAuthRequired(results as Map<string, WebRequestBlockingResponse>),
+    ) as any
   }
 }

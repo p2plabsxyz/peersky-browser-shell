@@ -125,6 +125,7 @@ describe('untested API behavior regressions', () => {
         router: harness.router,
         session: { cookies },
         store: { tabs: new Set() },
+        permissions: { has: () => true, hasHostAccess: () => true },
       }
       new CookiesAPI(ctx)
 

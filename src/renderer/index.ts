@@ -558,6 +558,7 @@ export const injectExtensionAPIs = () => {
             set: invokeExtension('cookies.set'),
             remove: invokeExtension('cookies.remove'),
             getAllCookieStores: invokeExtension('cookies.getAllCookieStores'),
+            getPartitionKey: invokeExtension('cookies.getPartitionKey'),
             onChanged: new ExtensionEvent('cookies.onChanged'),
           }
         },
@@ -616,8 +617,12 @@ export const injectExtensionAPIs = () => {
             getEnabledRulesets: invokeExtension('declarativeNetRequest.getEnabledRulesets'),
             updateEnabledRulesets: invokeExtension('declarativeNetRequest.updateEnabledRulesets'),
             updateStaticRules: invokeExtension('declarativeNetRequest.updateStaticRules'),
+            getDisabledRuleIds: invokeExtension('declarativeNetRequest.getDisabledRuleIds'),
+            getAvailableStaticRuleCount: invokeExtension('declarativeNetRequest.getAvailableStaticRuleCount'),
             isRegexSupported: invokeExtension('declarativeNetRequest.isRegexSupported'),
             getMatchedRules: invokeExtension('declarativeNetRequest.getMatchedRules'),
+            testMatchOutcome: invokeExtension('declarativeNetRequest.testMatchOutcome'),
+            setExtensionActionOptions: invokeExtension('declarativeNetRequest.setExtensionActionOptions'),
           }
         },
       },
@@ -638,11 +643,46 @@ export const injectExtensionAPIs = () => {
             resume: invokeExtension('downloads.resume'),
             search: invokeExtension('downloads.search'),
             setUiOptions: invokeExtension('downloads.setUiOptions'),
+            setShelfEnabled: invokeExtension('downloads.setShelfEnabled'),
             show: invokeExtension('downloads.show'),
             showDefaultFolder: invokeExtension('downloads.showDefaultFolder'),
             onChanged: new ExtensionEvent('downloads.onChanged'),
             onCreated: new ExtensionEvent('downloads.onCreated'),
-            onDeterminingFilename: new ExtensionEvent('downloads.onDeterminingFilename'),
+            onDeterminingFilename: (() => {
+              // A listener gets suggest(); calling it, or returning without
+              // returning true, gives the main process its answer.
+              const channel = new ExtensionEvent<(item: any) => void>('downloads.onDeterminingFilename')
+              const wrappers = new Map<Function, (item: any) => void>()
+              const answer = invokeExtension('downloads.determineFilename')
+              return {
+                addListener(callback: Function) {
+                  if (typeof callback !== 'function' || wrappers.has(callback)) return
+                  const wrapper = (item: any) => {
+                    let answered = false
+                    const suggest = (suggestion?: any) => {
+                      if (answered) return
+                      answered = true
+                      answer(item?.id, suggestion).catch(() => {})
+                    }
+                    let keep: any
+                    try {
+                      keep = callback(item, suggest)
+                    } catch {}
+                    if (keep !== true) suggest()
+                  }
+                  wrappers.set(callback, wrapper)
+                  channel.addListener(wrapper)
+                },
+                removeListener(callback: Function) {
+                  const wrapper = wrappers.get(callback)
+                  if (!wrapper) return
+                  wrappers.delete(callback)
+                  channel.removeListener(wrapper)
+                },
+                hasListener: (callback: Function) => wrappers.has(callback),
+                hasListeners: () => wrappers.size > 0,
+              }
+            })(),
             onErased: new ExtensionEvent('downloads.onErased'),
           }
         },
@@ -960,20 +1000,105 @@ export const injectExtensionAPIs = () => {
       scripting: {
         permission: 'scripting',
         factory: (base) => {
-          const ipcExecuteScript = invokeExtension('scripting.executeScript')
+          // Electron's own chrome.scripting does the injecting: it has an
+          // isolated world per extension in every frame and Chrome's errors.
+          // The main process checks each call first (the tab is a tab, the
+          // extension may reach its frames), and runs it itself where only
+          // PeerSky grants the access.
+          const native: any = base || {}
+          const ipc =
+            (name: string) =>
+            (...args: any[]) =>
+              electron.invokeExtension(extensionId, name, {}, ...args)
+          const NO_ACCESS = /^Cannot access contents of the page/
+          const toWire = (injection: any) => {
+            if (!injection || typeof injection !== 'object') return injection
+            const copy = { ...injection }
+            if (typeof copy.func === 'function') copy.func = String(copy.func)
+            return copy
+          }
+          // Promise or callback, with runtime.lastError for the callback.
+          const withCallback =
+            (fn: (...args: any[]) => Promise<any>) =>
+            (...args: any[]) => {
+              const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+              const promise = Promise.resolve().then(() => fn(...args))
+              if (!callback) return promise
+              promise.then(
+                (value) => callback(value),
+                (error) => {
+                  const rt = (globalThis as any).chrome?.runtime
+                  try {
+                    if (rt) rt.lastError = { message: error?.message ?? String(error) }
+                    callback()
+                  } finally {
+                    if (rt) delete rt.lastError
+                  }
+                },
+              )
+            }
+          const inject = (method: 'executeScript' | 'insertCSS' | 'removeCSS') =>
+            withCallback(async (injection: any) => {
+              const plan: any = await ipc(`scripting.${method}`)(toWire(injection))
+              if (plan?.mode === 'electron' && typeof native[method] === 'function') {
+                try {
+                  const out = await native[method]({ ...injection, target: plan.target })
+                  if (method !== 'executeScript' || !Array.isArray(out)) return out
+                  // The document ids webNavigation gives, so the two agree.
+                  return out.map((r: any) => ({
+                    ...r,
+                    documentId: plan.documentIds?.[r.frameId] ?? r.documentId,
+                  }))
+                } catch (error: any) {
+                  if (!NO_ACCESS.test(error?.message ?? '')) throw error
+                }
+              }
+              const done: any = await ipc(`scripting.${method}`)(toWire(injection), { fallback: true })
+              return done?.result
+            })
+
+          // Electron forgets registered scripts at a restart; the first
+          // context registers the persisted ones again before anything else
+          // reads or changes the registry.
+          const sync = async () => {
+            try {
+              await ipc('scripting.syncContentScripts')(await native.getRegisteredContentScripts())
+            } catch {}
+          }
+          const ready = (async () => {
+            try {
+              const pending: any[] = await ipc('scripting.restoreContentScripts')()
+              if (!Array.isArray(pending) || pending.length === 0) return
+              const have = new Set(((await native.getRegisteredContentScripts()) || []).map((s: any) => s.id))
+              for (const script of pending) {
+                if (have.has(script.id)) continue
+                try {
+                  await native.registerContentScripts([script])
+                } catch {}
+              }
+              await sync()
+            } catch {}
+          })()
+          const registry = (method: string, changes: boolean) =>
+            withCallback(async (...args: any[]) => {
+              await ready
+              if (typeof native[method] !== 'function') {
+                throw new Error(`scripting.${method} is not available in this context.`)
+              }
+              const out = await native[method](...args)
+              if (changes) await sync()
+              return out
+            })
+
           return {
             ...base,
-            insertCSS: invokeExtension('scripting.insertCSS'),
-            executeScript: (injection: any) => {
-              if (injection && typeof injection.func === 'function') {
-                injection = { ...injection, func: String(injection.func) }
-              }
-              return ipcExecuteScript(injection)
-            },
-            registerContentScripts: invokeExtension('scripting.registerContentScripts'),
-            getRegisteredContentScripts: invokeExtension('scripting.getRegisteredContentScripts'),
-            unregisterContentScripts: invokeExtension('scripting.unregisterContentScripts'),
-            updateContentScripts: invokeExtension('scripting.updateContentScripts'),
+            executeScript: inject('executeScript'),
+            insertCSS: inject('insertCSS'),
+            removeCSS: inject('removeCSS'),
+            registerContentScripts: registry('registerContentScripts', true),
+            getRegisteredContentScripts: registry('getRegisteredContentScripts', false),
+            unregisterContentScripts: registry('unregisterContentScripts', true),
+            updateContentScripts: registry('updateContentScripts', true),
           }
         },
       },
@@ -1229,548 +1354,98 @@ export const injectExtensionAPIs = () => {
       webRequest: {
         permission: 'webRequest',
         factory: (base) => {
-          const onBeforeRequestEvent = new ExtensionEvent<
-            (details: chrome.webRequest.WebRequestBodyDetails) =>
-              | void
-              | { cancel?: boolean; redirectUrl?: string }
-          >('webRequest.onBeforeRequest')
-          const onBeforeRequestWrapperMap = new Map<
-            (
-              details: chrome.webRequest.WebRequestBodyDetails,
-            ) => void | { cancel?: boolean; redirectUrl?: string },
-            (details: chrome.webRequest.WebRequestBodyDetails) => void
-          >()
-
-          const onBeforeSendHeadersEvent = new ExtensionEvent<
-            (details: chrome.webRequest.WebRequestHeadersDetails) => void | { requestHeaders?: any }
-          >('webRequest.onBeforeSendHeaders')
-          const onBeforeSendHeadersWrapperMap = new Map<
-            (details: chrome.webRequest.WebRequestHeadersDetails) => void | { requestHeaders?: any },
-            (details: chrome.webRequest.WebRequestHeadersDetails) => void
-          >()
-
-          const onHeadersReceivedEvent = new ExtensionEvent<
-            (
-              details: chrome.webRequest.WebResponseHeadersDetails,
-            ) => void | { responseHeaders?: any }
-          >('webRequest.onHeadersReceived')
-          const onHeadersReceivedWrapperMap = new Map<
-            (details: chrome.webRequest.WebResponseHeadersDetails) => void | { responseHeaders?: any },
-            (details: chrome.webRequest.WebResponseHeadersDetails) => void
-          >()
-
-          const onSendHeadersEvent = new ExtensionEvent<
-            (details: chrome.webRequest.WebRequestHeadersDetails) => void
-          >('webRequest.onSendHeaders')
-
-          const onBeforeRedirectEvent = new ExtensionEvent<
-            (details: chrome.webRequest.WebRedirectionResponseDetails) => void
-          >('webRequest.onBeforeRedirect')
-
-          const onResponseStartedEvent = new ExtensionEvent<
-            (details: chrome.webRequest.WebResponseCacheDetails) => void
-          >('webRequest.onResponseStarted')
-
-          const onCompletedEvent = new ExtensionEvent<
-            (details: chrome.webRequest.WebResponseCacheDetails) => void
-          >('webRequest.onCompleted')
-
-          const onErrorOccurredEvent = new ExtensionEvent<
-            (details: chrome.webRequest.WebResponseErrorDetails) => void
-          >('webRequest.onErrorOccurred')
-
-          const onAuthRequiredEvent = new ExtensionEvent<
-            (
-              details: chrome.webRequest.WebAuthenticationChallengeDetails,
-              asyncCallback?: (response?: chrome.webRequest.BlockingResponse) => void,
-            ) => void | chrome.webRequest.BlockingResponse
-          >('webRequest.onAuthRequired')
-          const onAuthRequiredWrapperMap = new Map<
-            (
-              details: chrome.webRequest.WebAuthenticationChallengeDetails,
-              asyncCallback?: (response?: chrome.webRequest.BlockingResponse) => void,
-            ) => void | chrome.webRequest.BlockingResponse,
-            (details: chrome.webRequest.WebAuthenticationChallengeDetails) => void
-          >()
-
-          return {
-            ...base,
-            onBeforeRequest: {
-              addListener(
-                callback: (
-                  details: chrome.webRequest.WebRequestBodyDetails,
-                ) => void | { cancel?: boolean; redirectUrl?: string },
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                const existing = onBeforeRequestWrapperMap.get(callback)
-                if (existing) return
-
-                // The registration id routes events: each dispatch is stamped
-                // with the target listener's id, and a wrapper only answers
-                // events addressed to it. Without this every wrapper on the
-                // shared channel answered every event, and the first response
-                // won — another listener's verdict could cancel the request.
-                const myIdPromise = Promise.resolve(
-                  invokeExtension('webRequest.addOnBeforeRequestListener')(filter, extraInfoSpec),
+          // Every event the main process sends carries the id of the listener
+          // it is for; a listener answers only its own, and never sees the id.
+          const invoke = (name: string, ...args: any[]) =>
+            electron.invokeExtension(extensionId, name, {}, ...args)
+          const canBlock = new Set(['onBeforeRequest', 'onBeforeSendHeaders', 'onHeadersReceived', 'onAuthRequired'])
+          const makeEvent = (name: string) => {
+            const suffix = name[0].toUpperCase() + name.slice(1)
+            const channel = new ExtensionEvent<(details: any) => void>(`webRequest.${name}`)
+            const wrappers = new Map<Function, { wrapper: (details: any) => void; id: Promise<any> }>()
+            // Identical listeners in this context, counted so the main process
+            // can tell a second one from a restarted worker's first.
+            const counts = new Map<string, number>()
+            return {
+              addListener(callback: Function, filter: any, extraInfoSpec?: string[]) {
+                if (typeof callback !== 'function' || wrappers.has(callback)) return
+                const spec = Array.isArray(extraInfoSpec) ? extraInfoSpec : []
+                let key = ''
+                try {
+                  key = JSON.stringify([filter, spec])
+                } catch {}
+                const ordinal = counts.get(key) || 0
+                counts.set(key, ordinal + 1)
+                const id = Promise.resolve(
+                  invoke(`webRequest.add${suffix}Listener`, filter, extraInfoSpec, ordinal),
                 ).catch(() => undefined)
-
-                const wrapper = (details: chrome.webRequest.WebRequestBodyDetails) => {
-                  const reqId = details && (details as any).requestId
-                  const listenerId = details && (details as any).listenerId
-                  myIdPromise.then((myId: any) => {
-                    if (myId != null && listenerId != null && listenerId !== myId) return
-                    return Promise.resolve()
-                      .then(() => callback(details))
-                      .then(
-                        (result) => {
-                          if (reqId != null && listenerId != null) {
-                            invokeExtension('webRequest.onBeforeRequest.response')(
-                              reqId,
-                              listenerId,
-                              result || undefined,
-                            ).catch(() => {})
-                          }
-                        },
-                        () => {
-                          if (reqId != null && listenerId != null) {
-                            invokeExtension('webRequest.onBeforeRequest.response')(
-                              reqId,
-                              listenerId,
-                              undefined,
-                            ).catch(() => {})
-                          }
-                        },
-                      )
-                  })
-                }
-
-                onBeforeRequestWrapperMap.set(callback, wrapper)
-                onBeforeRequestEvent.addListener(wrapper)
-              },
-              removeListener(
-                callback: (
-                  details: chrome.webRequest.WebRequestBodyDetails,
-                ) => void | { cancel?: boolean; redirectUrl?: string },
-              ) {
-                const wrapper = onBeforeRequestWrapperMap.get(callback)
-                if (wrapper) {
-                  onBeforeRequestEvent.removeListener(wrapper)
-                  onBeforeRequestWrapperMap.delete(callback)
-                  if (!onBeforeRequestEvent.hasListeners()) {
-                    invokeExtension('webRequest.removeOnBeforeRequestListener')().catch(() => {})
-                  }
-                } else {
-                  onBeforeRequestEvent.removeListener(callback as any)
-                }
-              },
-              hasListener(
-                callback: (
-                  details: chrome.webRequest.WebRequestBodyDetails,
-                ) => void | { cancel?: boolean; redirectUrl?: string },
-              ) {
-                return onBeforeRequestEvent.hasListener(
-                  onBeforeRequestWrapperMap.get(callback) || (callback as any),
-                )
-              },
-              hasListeners() {
-                return onBeforeRequestEvent.hasListeners()
-              },
-            },
-            onBeforeSendHeaders: {
-              addListener(
-                callback: (
-                  details: chrome.webRequest.WebRequestHeadersDetails,
-                ) => void | { requestHeaders?: any },
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                const existing = onBeforeSendHeadersWrapperMap.get(callback)
-                if (existing) return
-
-                const myIdPromise = Promise.resolve(
-                  invokeExtension('webRequest.addOnBeforeSendHeadersListener')(filter, extraInfoSpec),
-                ).catch(() => undefined)
-
-                const wrapper = (details: chrome.webRequest.WebRequestHeadersDetails) => {
-                  const reqId = details && (details as any).requestId
-                  const listenerId = details && (details as any).listenerId
-                  myIdPromise.then((myId: any) => {
-                    if (myId != null && listenerId != null && listenerId !== myId) return
-                    return Promise.resolve()
-                    .then(() => callback(details))
-                    .then((result) => {
-                      if (reqId != null && listenerId != null) {
-                        invokeExtension('webRequest.onBeforeSendHeaders.response')(
-                          reqId,
-                          listenerId,
-                          result || undefined,
-                        ).catch(() => {})
-                      }
-                    })
-                    .catch(() => {
-                      if (reqId != null && listenerId != null) {
-                        invokeExtension('webRequest.onBeforeSendHeaders.response')(
-                          reqId,
-                          listenerId,
-                          undefined,
-                        ).catch(() => {})
-                      }
-                    })
-                  })
-                }
-
-                onBeforeSendHeadersWrapperMap.set(callback, wrapper)
-                onBeforeSendHeadersEvent.addListener(wrapper)
-              },
-              removeListener(
-                callback: (
-                  details: chrome.webRequest.WebRequestHeadersDetails,
-                ) => void | { requestHeaders?: any },
-              ) {
-                const wrapper = onBeforeSendHeadersWrapperMap.get(callback)
-                if (wrapper) {
-                  onBeforeSendHeadersEvent.removeListener(wrapper)
-                  onBeforeSendHeadersWrapperMap.delete(callback)
-                  if (!onBeforeSendHeadersEvent.hasListeners()) {
-                    invokeExtension('webRequest.removeOnBeforeSendHeadersListener')().catch(() => {})
-                  }
-                } else {
-                  onBeforeSendHeadersEvent.removeListener(callback as any)
-                }
-              },
-              hasListener(
-                callback: (
-                  details: chrome.webRequest.WebRequestHeadersDetails,
-                ) => void | { requestHeaders?: any },
-              ) {
-                return onBeforeSendHeadersEvent.hasListener(
-                  onBeforeSendHeadersWrapperMap.get(callback) || (callback as any),
-                )
-              },
-              hasListeners() {
-                return onBeforeSendHeadersEvent.hasListeners()
-              },
-            },
-            onSendHeaders: {
-              addListener(
-                callback: (details: chrome.webRequest.WebRequestHeadersDetails) => void,
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                invokeExtension('webRequest.addOnSendHeadersListener')(
-                  filter,
-                  extraInfoSpec,
-                )
-                onSendHeadersEvent.addListener(callback)
-              },
-              removeListener(
-                callback: (details: chrome.webRequest.WebRequestHeadersDetails) => void,
-              ) {
-                onSendHeadersEvent.removeListener(callback)
-                if (!onSendHeadersEvent.hasListeners()) {
-                  invokeExtension('webRequest.removeOnSendHeadersListener')().catch(() => {})
-                }
-              },
-              hasListener(
-                callback: (details: chrome.webRequest.WebRequestHeadersDetails) => void,
-              ) {
-                return onSendHeadersEvent.hasListener(callback)
-              },
-              hasListeners() {
-                return onSendHeadersEvent.hasListeners()
-              },
-            },
-            onHeadersReceived: {
-              addListener(
-                callback: (
-                  details: chrome.webRequest.WebResponseHeadersDetails,
-                ) => void | { responseHeaders?: any },
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                const existing = onHeadersReceivedWrapperMap.get(callback)
-                if (existing) return
-
-                const myIdPromise = Promise.resolve(
-                  invokeExtension('webRequest.addOnHeadersReceivedListener')(filter, extraInfoSpec),
-                ).catch(() => undefined)
-
-                const wrapper = (details: chrome.webRequest.WebResponseHeadersDetails) => {
-                  const reqId = details && (details as any).requestId
-                  const listenerId = details && (details as any).listenerId
-                  myIdPromise.then((myId: any) => {
-                    if (myId != null && listenerId != null && listenerId !== myId) return
-                    return Promise.resolve()
-                      .then(() => callback(details))
-                      .then(
-                        (result) => {
-                          if (reqId != null && listenerId != null) {
-                            invokeExtension('webRequest.onHeadersReceived.response')(
-                              reqId,
-                              listenerId,
-                              result || undefined,
-                            ).catch(() => {})
-                          }
-                        },
-                        () => {
-                          if (reqId != null && listenerId != null) {
-                            invokeExtension('webRequest.onHeadersReceived.response')(
-                              reqId,
-                              listenerId,
-                              undefined,
-                            ).catch(() => {})
-                          }
-                        },
-                      )
-                  })
-                }
-
-                onHeadersReceivedWrapperMap.set(callback, wrapper)
-                onHeadersReceivedEvent.addListener(wrapper)
-              },
-              removeListener(
-                callback: (
-                  details: chrome.webRequest.WebResponseHeadersDetails,
-                ) => void | { responseHeaders?: any },
-              ) {
-                const wrapper = onHeadersReceivedWrapperMap.get(callback)
-                if (wrapper) {
-                  onHeadersReceivedEvent.removeListener(wrapper)
-                  onHeadersReceivedWrapperMap.delete(callback)
-                  if (!onHeadersReceivedEvent.hasListeners()) {
-                    invokeExtension('webRequest.removeOnHeadersReceivedListener')().catch(() => {})
-                  }
-                } else {
-                  onHeadersReceivedEvent.removeListener(callback as any)
-                }
-              },
-              hasListener(
-                callback: (
-                  details: chrome.webRequest.WebResponseHeadersDetails,
-                ) => void | { responseHeaders?: any },
-              ) {
-                return onHeadersReceivedEvent.hasListener(
-                  onHeadersReceivedWrapperMap.get(callback) || (callback as any),
-                )
-              },
-              hasListeners() {
-                return onHeadersReceivedEvent.hasListeners()
-              },
-            },
-            onBeforeRedirect: {
-              addListener(
-                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                invokeExtension('webRequest.addOnBeforeRedirectListener')(
-                  filter,
-                  extraInfoSpec,
-                )
-                onBeforeRedirectEvent.addListener(callback)
-              },
-              removeListener(
-                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
-              ) {
-                onBeforeRedirectEvent.removeListener(callback)
-                if (!onBeforeRedirectEvent.hasListeners()) {
-                  invokeExtension('webRequest.removeOnBeforeRedirectListener')().catch(() => {})
-                }
-              },
-              hasListener(
-                callback: (details: chrome.webRequest.WebRedirectionResponseDetails) => void,
-              ) {
-                return onBeforeRedirectEvent.hasListener(callback)
-              },
-              hasListeners() {
-                return onBeforeRedirectEvent.hasListeners()
-              },
-            },
-            onResponseStarted: {
-              addListener(
-                callback: (details: chrome.webRequest.WebResponseCacheDetails) => void,
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                invokeExtension('webRequest.addOnResponseStartedListener')(
-                  filter,
-                  extraInfoSpec,
-                )
-                onResponseStartedEvent.addListener(callback)
-              },
-              removeListener(
-                callback: (details: chrome.webRequest.WebResponseCacheDetails) => void,
-              ) {
-                onResponseStartedEvent.removeListener(callback)
-                if (!onResponseStartedEvent.hasListeners()) {
-                  invokeExtension('webRequest.removeOnResponseStartedListener')().catch(() => {})
-                }
-              },
-              hasListener(
-                callback: (details: chrome.webRequest.WebResponseCacheDetails) => void,
-              ) {
-                return onResponseStartedEvent.hasListener(callback)
-              },
-              hasListeners() {
-                return onResponseStartedEvent.hasListeners()
-              },
-            },
-            onCompleted: {
-              addListener(
-                callback: (details: chrome.webRequest.WebResponseCacheDetails) => void,
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                invokeExtension('webRequest.addOnCompletedListener')(
-                  filter,
-                  extraInfoSpec,
-                )
-                onCompletedEvent.addListener(callback)
-              },
-              removeListener(
-                callback: (details: chrome.webRequest.WebResponseCacheDetails) => void,
-              ) {
-                onCompletedEvent.removeListener(callback)
-                if (!onCompletedEvent.hasListeners()) {
-                  invokeExtension('webRequest.removeOnCompletedListener')().catch(() => {})
-                }
-              },
-              hasListener(
-                callback: (details: chrome.webRequest.WebResponseCacheDetails) => void,
-              ) {
-                return onCompletedEvent.hasListener(callback)
-              },
-              hasListeners() {
-                return onCompletedEvent.hasListeners()
-              },
-            },
-            onErrorOccurred: {
-              addListener(
-                callback: (details: chrome.webRequest.WebResponseErrorDetails) => void,
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                invokeExtension('webRequest.addOnErrorOccurredListener')(
-                  filter,
-                  extraInfoSpec,
-                )
-                onErrorOccurredEvent.addListener(callback)
-              },
-              removeListener(
-                callback: (details: chrome.webRequest.WebResponseErrorDetails) => void,
-              ) {
-                onErrorOccurredEvent.removeListener(callback)
-                if (!onErrorOccurredEvent.hasListeners()) {
-                  invokeExtension('webRequest.removeOnErrorOccurredListener')().catch(() => {})
-                }
-              },
-              hasListener(
-                callback: (details: chrome.webRequest.WebResponseErrorDetails) => void,
-              ) {
-                return onErrorOccurredEvent.hasListener(callback)
-              },
-              hasListeners() {
-                return onErrorOccurredEvent.hasListeners()
-              },
-            },
-            onAuthRequired: {
-              addListener(
-                callback: (
-                  details: chrome.webRequest.WebAuthenticationChallengeDetails,
-                  asyncCallback?: (response?: chrome.webRequest.BlockingResponse) => void,
-                ) => void | chrome.webRequest.BlockingResponse,
-                filter: chrome.webRequest.RequestFilter,
-                extraInfoSpec?: string[],
-              ) {
-                const existing = onAuthRequiredWrapperMap.get(callback)
-                if (existing) return
-
-                invokeExtension('webRequest.addOnAuthRequiredListener')(filter, extraInfoSpec)
-
-                const wrapper = (details: chrome.webRequest.WebAuthenticationChallengeDetails) => {
-                  const reqId = details && (details as any).requestId
-                  const listenerId = details && (details as any).listenerId
-                  const send = (result?: chrome.webRequest.BlockingResponse | void) => {
-                    if (reqId != null && listenerId != null) {
-                      invokeExtension('webRequest.onAuthRequired.response')(
-                        reqId,
-                        listenerId,
-                        result || undefined,
-                      ).catch(() => {})
+                const asyncBlocking = name === 'onAuthRequired' && spec.includes('asyncBlocking')
+                const blocking = canBlock.has(name) && (spec.includes('blocking') || asyncBlocking)
+                const wrapper = (raw: any) => {
+                  void id.then((myId) => {
+                    if (!raw || myId == null || raw.listenerId !== myId) return
+                    const { listenerId, ...details } = raw
+                    let answered = false
+                    const respond = (result?: any) => {
+                      if (answered) return
+                      answered = true
+                      if (!blocking) return
+                      invoke(`webRequest.${name}.response`, details.requestId, listenerId, result || undefined).catch(() => {})
                     }
-                  }
-
-                  const usesAsyncBlocking =
-                    Array.isArray(extraInfoSpec) && extraInfoSpec.includes('asyncBlocking')
-
-                  if (usesAsyncBlocking) {
-                    let responded = false
-                    const asyncCallback = (result?: chrome.webRequest.BlockingResponse) => {
-                      if (responded) return
-                      responded = true
-                      send(result)
+                    if (asyncBlocking) {
+                      try {
+                        const result = callback(details, respond)
+                        if (result !== undefined) respond(result)
+                      } catch {
+                        respond(undefined)
+                      }
+                      return
                     }
-
-                    Promise.resolve()
-                      .then(() => callback(details, asyncCallback))
-                      .then((result) => {
-                        if (!responded && result !== undefined) {
-                          responded = true
-                          send(result)
-                        }
-                      })
-                      .catch(() => {
-                        if (!responded) {
-                          responded = true
-                          send(undefined)
-                        }
-                      })
-
-                    return
-                  }
-
-                  Promise.resolve()
-                    .then(() => callback(details))
-                    .then((result) => send(result))
-                    .catch(() => send(undefined))
+                    let result: any
+                    try {
+                      result = callback(details)
+                    } catch {
+                      respond(undefined)
+                      return
+                    }
+                    Promise.resolve(result).then(respond, () => respond(undefined))
+                  })
                 }
-
-                onAuthRequiredWrapperMap.set(callback, wrapper)
-                onAuthRequiredEvent.addListener(wrapper)
+                wrappers.set(callback, { wrapper, id })
+                channel.addListener(wrapper)
               },
-              removeListener(
-                callback: (
-                  details: chrome.webRequest.WebAuthenticationChallengeDetails,
-                  asyncCallback?: (response?: chrome.webRequest.BlockingResponse) => void,
-                ) => void | chrome.webRequest.BlockingResponse,
-              ) {
-                const wrapper = onAuthRequiredWrapperMap.get(callback)
-                if (wrapper) {
-                  onAuthRequiredEvent.removeListener(wrapper)
-                  onAuthRequiredWrapperMap.delete(callback)
-                  if (!onAuthRequiredEvent.hasListeners()) {
-                    invokeExtension('webRequest.removeOnAuthRequiredListener')().catch(() => {})
-                  }
-                } else {
-                  onAuthRequiredEvent.removeListener(callback as any)
-                }
+              removeListener(callback: Function) {
+                const entry = wrappers.get(callback)
+                if (!entry) return
+                wrappers.delete(callback)
+                channel.removeListener(entry.wrapper)
+                void entry.id.then((myId) => {
+                  if (myId != null) invoke(`webRequest.remove${suffix}Listener`, myId).catch(() => {})
+                })
               },
-              hasListener(
-                callback: (
-                  details: chrome.webRequest.WebAuthenticationChallengeDetails,
-                  asyncCallback?: (response?: chrome.webRequest.BlockingResponse) => void,
-                ) => void | chrome.webRequest.BlockingResponse,
-              ) {
-                return onAuthRequiredEvent.hasListener(
-                  onAuthRequiredWrapperMap.get(callback) || (callback as any),
-                )
+              hasListener(callback: Function) {
+                return wrappers.has(callback)
               },
               hasListeners() {
-                return onAuthRequiredEvent.hasListeners()
+                return wrappers.size > 0
               },
-            },
+            }
           }
+          const api: any = { ...base }
+          for (const name of [
+            'onBeforeRequest',
+            'onBeforeSendHeaders',
+            'onSendHeaders',
+            'onHeadersReceived',
+            'onAuthRequired',
+            'onResponseStarted',
+            'onBeforeRedirect',
+            'onCompleted',
+            'onErrorOccurred',
+          ]) {
+            api[name] = makeEvent(name)
+          }
+          return api
         },
       },
 

@@ -69,6 +69,7 @@ describe('chrome.* APIs match Chrome', function () {
       session: ses,
       ...browser.impl,
     })
+    browser.forwardWebRequests()
     const sessionExtensions = ses.extensions || ses
     await sessionExtensions.loadExtension(probeDir)
     await sessionExtensions.loadExtension(path.join(fixtures, 'chrome-api-probe-peer'))
