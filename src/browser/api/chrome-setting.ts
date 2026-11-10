@@ -95,7 +95,6 @@ export class ExtensionSettings {
   private loaded = new Set<string>()
   private listeners: Array<(change: SettingChange) => void | Promise<void>> = []
   private loadListeners: Array<(extensionId: string, loaded: boolean) => void> = []
-  private flushing: Promise<void> = Promise.resolve()
 
   private constructor(private ctx: ExtensionContext) {
     this.ready = Promise.resolve()
@@ -286,10 +285,7 @@ export class ExtensionSettings {
 
   private save() {
     this.ctx.stateStore.setNamespace(STATE_NS, this.state)
-    // One write at a time: overlapping writes of the same file can interleave.
-    this.flushing = this.flushing
-      .then(() => this.ctx.stateStore.flush())
-      .catch((error) => console.error('Failed to save extension settings:', error))
+    void this.ctx.stateStore.flush().catch((error) => console.error('Failed to save extension settings:', error))
   }
 }
 
