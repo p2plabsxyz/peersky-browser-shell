@@ -138,7 +138,11 @@ export const injectExtensionAPIs = () => {
 
   // Function body to run in the main world.
   // IMPORTANT: This must be self-contained, no closure variable will be included!
-  function mainWorldScript(constants: Record<string, any>, schema: Record<string, any>) {
+  function mainWorldScript(
+    constants: Record<string, any>,
+    schema: Record<string, any>,
+    context: { offscreen?: boolean } = {},
+  ) {
     // Use context bridge API or closure variable when context isolation is disabled.
     const electron = ((globalThis as any).electron as typeof electronContext) || electronContext
 
@@ -174,22 +178,33 @@ export const injectExtensionAPIs = () => {
     const manifest: chrome.runtime.Manifest =
       (extensionId && chrome.runtime.getManifest?.()) || ({} as any)
 
+    // A callback runs here, in the extension's own world, so it sees
+    // runtime.lastError: set in the preload's world, it never reached the
+    // extension. Chrome calls it with no arguments when there is no result.
+    const runCallback = (callback: Function, error?: unknown, result?: unknown) => {
+      const runtime = (globalThis as any).chrome?.runtime
+      if (error && runtime) {
+        runtime.lastError = { message: error instanceof Error ? error.message : String(error) }
+      }
+      try {
+        if (error || result === undefined) callback()
+        else callback(result)
+      } finally {
+        if (runtime) delete runtime.lastError
+      }
+    }
+
     const invokeExtension =
       (fnName: string, opts: ExtensionMessageOptions = {}) =>
-        (...args: any[]) =>
-          electron.invokeExtension(extensionId, fnName, opts, ...args)
-
-    function imageData2base64(imageData: ImageData) {
-      const canvas = document.createElement('canvas')
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return null
-
-      canvas.width = imageData.width
-      canvas.height = imageData.height
-      ctx.putImageData(imageData, 0, 0)
-
-      return canvas.toDataURL()
-    }
+        (...args: any[]) => {
+          const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+          const promise = electron.invokeExtension(extensionId, fnName, opts, ...args)
+          if (!callback) return promise
+          promise.then(
+            (result: unknown) => runCallback(callback, undefined, result),
+            (error: unknown) => runCallback(callback, error),
+          )
+        }
 
     // Each listener gets an id here, in the page's world, so the preload can
     // find it again on removeListener: the function itself reaches the
@@ -338,6 +353,24 @@ export const injectExtensionAPIs = () => {
     }
 
     const browserActionFactory = (base: DeepPartial<typeof globalThis.chrome.browserAction>) => {
+      // ImageData cannot cross to the main process; its pixels can.
+      const serializeImageData = (value: any): any => {
+        if (typeof ImageData !== 'undefined' && value instanceof ImageData) {
+          return { width: value.width, height: value.height, data: new Uint8Array(value.data) }
+        }
+        if (value && typeof value === 'object' && !Array.isArray(value)) {
+          const out: any = {}
+          for (const [size, data] of Object.entries(value)) {
+            out[size] =
+              typeof ImageData !== 'undefined' && data instanceof ImageData
+                ? { width: data.width, height: data.height, data: new Uint8Array(data.data) }
+                : data
+          }
+          return out
+        }
+        return value
+      }
+
       const api = {
         ...base,
 
@@ -346,26 +379,9 @@ export const injectExtensionAPIs = () => {
 
         setIcon: invokeExtension('browserAction.setIcon', {
           serialize: (details: chrome.action.TabIconDetails) => {
-            if (details.imageData) {
-              if (manifest.manifest_version === 3) {
-                // TODO(mv3): might need to use offscreen document to serialize
-                console.warn(
-                  'action.setIcon with imageData is not yet supported by electron-chrome-extensions',
-                )
-                details.imageData = undefined
-              } else if (details.imageData instanceof ImageData) {
-                details.imageData = imageData2base64(details.imageData) as any
-              } else {
-                details.imageData = Object.entries(details.imageData).reduce(
-                  (obj: any, pair: any[]) => {
-                    obj[pair[0]] = imageData2base64(pair[1])
-                    return obj
-                  },
-                  {},
-                )
-              }
+            if (details && typeof details === 'object' && details.imageData !== undefined) {
+              return [{ ...details, imageData: serializeImageData(details.imageData) }]
             }
-
             return [details]
           },
         }),
@@ -379,14 +395,26 @@ export const injectExtensionAPIs = () => {
         setBadgeBackgroundColor: invokeExtension('browserAction.setBadgeBackgroundColor'),
         getBadgeBackgroundColor: invokeExtension('browserAction.getBadgeBackgroundColor'),
 
+        setBadgeTextColor: invokeExtension('browserAction.setBadgeTextColor'),
+        getBadgeTextColor: invokeExtension('browserAction.getBadgeTextColor'),
+
         getUserSettings: invokeExtension('browserAction.getUserSettings'),
 
-        enable: invokeExtension('browserAction.enable', { noop: true }),
-        disable: invokeExtension('browserAction.disable', { noop: true }),
+        enable: invokeExtension('browserAction.enable'),
+        disable: invokeExtension('browserAction.disable'),
+        isEnabled: invokeExtension('browserAction.isEnabled'),
 
         openPopup: invokeExtension('browserAction.openPopup'),
 
         onClicked: new ExtensionEvent('browserAction.onClicked'),
+        onUserSettingsChanged: new ExtensionEvent('browserAction.onUserSettingsChanged'),
+      }
+
+      // These came with the action API; Manifest V2's browserAction has none.
+      if (manifest.manifest_version !== 3) {
+        for (const name of ['setBadgeTextColor', 'getBadgeTextColor', 'getUserSettings', 'isEnabled', 'onUserSettingsChanged']) {
+          delete (api as any)[name]
+        }
       }
 
       return api
@@ -450,11 +478,15 @@ export const injectExtensionAPIs = () => {
             getLayout: invokeExtension('sidePanel.getLayout'),
             open: invokeExtension('sidePanel.open'),
             close: invokeExtension('sidePanel.close'),
+            onOpened: new ExtensionEvent('sidePanel.onOpened'),
+            onClosed: new ExtensionEvent('sidePanel.onClosed'),
           }
         },
       },
 
       commands: {
+        // Chrome gives chrome.commands only to an extension whose manifest has commands.
+        manifestKey: 'commands',
         factory: (base) => {
           return {
             ...base,
@@ -482,41 +514,101 @@ export const injectExtensionAPIs = () => {
       contextMenus: {
         permission: 'contextMenus',
         factory: (base) => {
+          const CONTEXTS = ['action', 'all', 'audio', 'browser_action', 'editable', 'frame', 'image', 'launcher', 'link', 'page', 'page_action', 'selection', 'tab', 'video']
+          const TYPES = ['checkbox', 'normal', 'radio', 'separator']
+          const CREATE_SIG =
+            'contextMenus.create(contextMenus.CreateProperties createProperties, optional function callback)'
+          const UPDATE_SIG =
+            'contextMenus.update([integer|string] id, object updateProperties, optional function callback)'
+          const REMOVE_SIG = 'contextMenus.remove([integer|string] menuItemId, optional function callback)'
+          // An event page or service worker gets no generated ids and no
+          // onclick, as in Chrome: the main process says why.
+          const lazy =
+            manifest.manifest_version === 3 || (manifest as any).background?.persistent === false
           let menuCounter = 0
-          const menuCallbacks: {
-            [key: string]: chrome.contextMenus.CreateProperties['onclick']
-          } = {}
-          const menuCreate = invokeExtension('contextMenus.create')
+          const menuCallbacks = new Map<string, Function>()
+          const callbackKey = (id: unknown) => `${typeof id}:${String(id)}`
+
+          // Chrome's bindings check these before the call is made, and throw.
+          const checkProps = (signature: string, param: string, props: any) => {
+            const fail = (detail: string) =>
+              new Error(`Error in invocation of ${signature}: Error at parameter '${param}': ${detail}`)
+            if (props.type !== undefined && !TYPES.includes(props.type)) {
+              throw fail(`Error at property 'type': Value must be one of ${TYPES.join(', ')}.`)
+            }
+            if (props.contexts !== undefined) {
+              if (!Array.isArray(props.contexts)) {
+                throw fail(`Error at property 'contexts': Invalid type: expected array, found ${typeof props.contexts}.`)
+              }
+              props.contexts.forEach((c: unknown, i: number) => {
+                if (typeof c !== 'string' || !CONTEXTS.includes(c)) {
+                  throw fail(`Error at property 'contexts': Error at index ${i}: Value must be one of ${CONTEXTS.join(', ')}.`)
+                }
+              })
+            }
+          }
 
           let hasInternalListener = false
           const addInternalListener = () => {
-            api.onClicked.addListener((info, tab) => {
-              const callback = menuCallbacks[info.menuItemId]
+            api.onClicked.addListener((info: any, tab: any) => {
+              const callback = menuCallbacks.get(callbackKey(info.menuItemId))
               if (callback && tab) callback(info, tab)
             })
             hasInternalListener = true
           }
+          const takeOnclick = (id: unknown, props: any) => {
+            if (typeof props.onclick !== 'function') return
+            if (lazy) {
+              props.onclick = true
+              return
+            }
+            if (!hasInternalListener) addInternalListener()
+            menuCallbacks.set(callbackKey(id), props.onclick)
+            delete props.onclick
+          }
 
-          const api = {
+          const menuCreate = invokeExtension('contextMenus.create')
+          const menuUpdate = invokeExtension('contextMenus.update')
+          const menuRemove = invokeExtension('contextMenus.remove')
+          const menuRemoveAll = invokeExtension('contextMenus.removeAll')
+
+          const api: any = {
             ...base,
-            create: function (
-              createProperties: chrome.contextMenus.CreateProperties,
-              callback?: Function,
-            ) {
-              if (typeof createProperties.id === 'undefined') {
-                createProperties.id = `${++menuCounter}`
+            create: function (createProperties: any, callback?: Function) {
+              if (!createProperties || typeof createProperties !== 'object' || Array.isArray(createProperties) ||
+                (callback !== undefined && typeof callback !== 'function')) {
+                throw new Error(`Error in invocation of ${CREATE_SIG}: No matching signature.`)
               }
-              if (createProperties.onclick) {
-                if (!hasInternalListener) addInternalListener()
-                menuCallbacks[createProperties.id] = createProperties.onclick
-                delete createProperties.onclick
-              }
-              menuCreate(createProperties, callback)
-              return createProperties.id
+              checkProps(CREATE_SIG, 'createProperties', createProperties)
+              const props = { ...createProperties }
+              if (props.id === undefined && !lazy) props.id = ++menuCounter
+              takeOnclick(props.id, props)
+              const done = menuCreate(props, ...(callback ? [callback] : []))
+              if (!callback) done.catch(() => {})
+              return props.id
             },
-            update: invokeExtension('contextMenus.update'),
-            remove: invokeExtension('contextMenus.remove'),
-            removeAll: invokeExtension('contextMenus.removeAll'),
+            update: function (id: any, updateProperties: any, callback?: Function) {
+              if ((typeof id !== 'string' && typeof id !== 'number') || !updateProperties ||
+                typeof updateProperties !== 'object' || (callback !== undefined && typeof callback !== 'function')) {
+                throw new Error(`Error in invocation of ${UPDATE_SIG}: No matching signature.`)
+              }
+              checkProps(UPDATE_SIG, 'updateProperties', updateProperties)
+              const props = { ...updateProperties }
+              takeOnclick(id, props)
+              return menuUpdate(id, props, ...(callback ? [callback] : []))
+            },
+            remove: function (id: any, callback?: Function) {
+              if ((typeof id !== 'string' && typeof id !== 'number') || (callback !== undefined && typeof callback !== 'function')) {
+                throw new Error(`Error in invocation of ${REMOVE_SIG}: No matching signature.`)
+              }
+              const result = menuRemove(id, ...(callback ? [callback] : []))
+              Promise.resolve(result).then(() => menuCallbacks.delete(callbackKey(id)), () => {})
+              return result
+            },
+            removeAll: function (callback?: Function) {
+              menuCallbacks.clear()
+              return menuRemoveAll(...(callback ? [callback] : []))
+            },
             onClicked: new ExtensionEvent<
               (info: chrome.contextMenus.OnClickData, tab: chrome.tabs.Tab) => void
             >('contextMenus.onClicked'),
@@ -774,9 +866,14 @@ export const injectExtensionAPIs = () => {
           }
           // A service worker has no views, and Manifest V3 has no getURL or
           // background page, as in Chrome.
-          if (contextKind === 'worker') delete api.getViews
+          // A page keeps getBackgroundPage, which gives null without a
+          // background page, as Chrome's does.
+          if (contextKind === 'worker') {
+            delete api.getViews
+            delete api.getBackgroundPage
+          }
           if (manifest.manifest_version === 3) {
-            for (const name of ['getURL', 'getBackgroundPage', 'getExtensionTabs', 'sendRequest', 'onRequest', 'onRequestExternal', 'lastError']) {
+            for (const name of ['getURL', 'getExtensionTabs', 'sendRequest', 'onRequest', 'onRequestExternal', 'lastError']) {
               delete api[name]
             }
           }
@@ -787,16 +884,24 @@ export const injectExtensionAPIs = () => {
       identity: {
         permission: 'identity',
         factory: (base) => {
-          const redirectDomain = 'chromiumapp.org'
-          const redirectBase = extensionId
-            ? `https://${extensionId}.${redirectDomain}/`
-            : ''
+          const redirectBase = extensionId ? `https://${extensionId}.chromiumapp.org/` : ''
           return {
             ...base,
-            getRedirectURL: (path?: string) =>
-              path ? redirectBase + path.replace(/^\//, '') : redirectBase,
+            getRedirectURL: (path?: unknown) => {
+              if (path !== undefined && path !== null && typeof path !== 'string') {
+                throw new Error(
+                  'Error in invocation of identity.getRedirectURL(optional string path): No matching signature.',
+                )
+              }
+              return path ? redirectBase + (path as string).replace(/^\//, '') : redirectBase
+            },
             launchWebAuthFlow: invokeExtension('identity.launchWebAuthFlow'),
             getAuthToken: invokeExtension('identity.getAuthToken'),
+            getProfileUserInfo: invokeExtension('identity.getProfileUserInfo'),
+            getAccounts: invokeExtension('identity.getAccounts'),
+            removeCachedAuthToken: invokeExtension('identity.removeCachedAuthToken'),
+            clearAllCachedAuthTokens: invokeExtension('identity.clearAllCachedAuthTokens'),
+            onSignInChanged: new ExtensionEvent('identity.onSignInChanged'),
           }
         },
       },
@@ -871,6 +976,8 @@ export const injectExtensionAPIs = () => {
             onClicked: new ExtensionEvent('notifications.onClicked'),
             onButtonClicked: new ExtensionEvent('notifications.onButtonClicked'),
             onClosed: new ExtensionEvent('notifications.onClosed'),
+            onPermissionLevelChanged: new ExtensionEvent('notifications.onPermissionLevelChanged'),
+            onShowSettings: new ExtensionEvent('notifications.onShowSettings'),
           }
         },
       },
@@ -1188,102 +1295,247 @@ export const injectExtensionAPIs = () => {
       storage: {
         permission: 'storage',
         factory: (base) => {
-          const customOnChanged = new ExtensionEvent('storage.onChanged')
-          const originalAddListener = base?.onChanged?.addListener?.bind(base.onChanged)
-          const originalRemoveListener = base?.onChanged?.removeListener?.bind(base.onChanged)
+          // local, sync and managed are the shell's; session is Electron's own,
+          // which is Chrome's code and is shared with content scripts. They
+          // check their arguments the same way, here, before any call is made.
+          const SIG: Record<string, string> = {
+            get: 'get(optional [string|array|object] keys, optional function callback)',
+            getKeys: 'getKeys(optional function callback)',
+            set: 'set(object items, optional function callback)',
+            remove: 'remove([string|array] keys, optional function callback)',
+            clear: 'clear(optional function callback)',
+            getBytesInUse: 'getBytesInUse(optional [string|array] keys, optional function callback)',
+            setAccessLevel: 'setAccessLevel(object accessOptions, optional function callback)',
+          }
+          const fail = (method: string, detail = 'No matching signature.') =>
+            new Error(`Error in invocation of storage.${SIG[method]}: ${detail}`)
 
-          const addListener = (cb: any) => {
-            if (originalAddListener) {
+          // Splits (args..., callback) as Chrome's bindings do, refusing more
+          // arguments than the method takes.
+          const split = (method: string, args: any[], max: number) => {
+            while (args.length && args[args.length - 1] === undefined) args.pop()
+            const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+            if (args.length > max) throw fail(method)
+            return { args, callback }
+          }
+
+          // Values as Chrome's V8ValueConverter turns them into JSON: functions,
+          // undefined and symbols are left out of objects and become null in
+          // arrays, as do numbers that are not finite; dates, maps and the like
+          // become {}; a cycle becomes null; nothing deeper than 100 levels.
+          const SKIP = {}
+          const BINARY = new Error('Cannot serialize value to JSON')
+          const storable = (value: any, depth: number, ancestors: Set<any>): any => {
+            if (value === null) return null
+            switch (typeof value) {
+              case 'boolean':
+              case 'string':
+                return value
+              case 'number':
+                return Number.isFinite(value) ? (Object.is(value, -0) ? 0 : value) : SKIP
+              case 'object':
+                break
+              default:
+                return SKIP
+            }
+            if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) throw BINARY
+            if (depth > 100) return SKIP
+            if (ancestors.has(value)) return null
+            ancestors.add(value)
+            try {
+              if (Array.isArray(value)) {
+                const out: any[] = []
+                for (let i = 0; i < value.length; i++) {
+                  const item = storable(value[i], depth + 1, ancestors)
+                  out.push(item === SKIP ? null : item)
+                }
+                return out
+              }
+              const out: any = {}
+              for (const key of Object.keys(value)) {
+                let item: any
+                try {
+                  item = storable(value[key], depth + 1, ancestors)
+                } catch (e) {
+                  if (e === BINARY) throw e
+                  continue
+                }
+                if (item !== SKIP) {
+                  Object.defineProperty(out, key, { value: item, enumerable: true, writable: true, configurable: true })
+                }
+              }
+              return out
+            } finally {
+              ancestors.delete(value)
+            }
+          }
+          const storableItems = (items: any) => storable(items, 0, new Set())
+
+          const isObject = (v: unknown) => !!v && typeof v === 'object' && !Array.isArray(v)
+          const isKeyList = (v: unknown) => Array.isArray(v) && v.every((k) => typeof k === 'string')
+
+          // A rejection from a check that Chrome makes in the browser, which
+          // reaches a callback as runtime.lastError rather than as a throw.
+          const rejectLater = (error: Error, callback?: Function) => {
+            if (!callback) return Promise.reject(error)
+            const runtime = (globalThis as any).chrome?.runtime
+            queueMicrotask(() => {
+              if (runtime) runtime.lastError = { message: error.message }
               try {
-                originalAddListener(cb)
-              } catch {
-                // Some Electron contexts expose a partial native storage event that can throw.
-                // We still want our IPC-backed listener to be registered.
+                callback()
+              } finally {
+                if (runtime) delete runtime.lastError
               }
-            }
-            customOnChanged.addListener(cb)
-          }
-          const removeListener = (cb: any) => {
-            if (originalRemoveListener) {
-              try {
-                originalRemoveListener(cb)
-              } catch {
-                // Ignore and continue removing from the IPC-backed listener set.
-              }
-            }
-            customOnChanged.removeListener(cb)
-          }
-          const hasListener = (cb: any) => {
-            return customOnChanged.hasListener(cb) || (base?.onChanged?.hasListener?.(cb) ?? false)
-          }
-          const hasListeners = () =>
-            customOnChanged.hasListeners() || (base?.onChanged?.hasListeners?.() ?? false)
-
-          const onChanged = { addListener, removeListener, hasListener, hasListeners }
-
-          const cbWrap = (fn: (...a: any[]) => Promise<any>) =>
-            (...args: any[]) => {
-              const last = args[args.length - 1]
-              if (typeof last === 'function') {
-                const cb = args.pop()
-                fn(...args).then(cb).catch(() => cb(undefined))
-                return
-              }
-              return fn(...args)
-            }
-
-          /** storage.get must never pass undefined to callbacks (extensions index nested prefs). */
-          const cbWrapStorageGet = (fn: (...a: any[]) => Promise<any>) =>
-            (...args: any[]) => {
-              const last = args[args.length - 1]
-              if (typeof last === 'function') {
-                const cb = args.pop()
-                fn(...args)
-                  .then((r) => cb(r != null && typeof r === 'object' ? r : {}))
-                  .catch(() => cb({}))
-                return
-              }
-              return fn(...args).then((r) => (r != null && typeof r === 'object' ? r : {}))
-            }
-
-          // Per-area onChanged is required by real extensions (e.g. Dark Reader uses
-          // chrome.storage.local.onChanged). It aliases the same listeners as
-          // chrome.storage.onChanged; the event payload includes the storage area.
-          const ipcLocal = {
-            get: cbWrapStorageGet(invokeExtension('storage.local.get')),
-            set: cbWrap(invokeExtension('storage.local.set')),
-            remove: cbWrap(invokeExtension('storage.local.remove')),
-            clear: cbWrap(invokeExtension('storage.local.clear')),
-            getBytesInUse: cbWrap(invokeExtension('storage.local.getBytesInUse')),
-            onChanged,
-            QUOTA_BYTES: 10485760,
+            })
+            return undefined
           }
 
-          const ipcManaged = {
-            get: cbWrapStorageGet(invokeExtension('storage.managed.get')),
-            onChanged: {
-              addListener: () => {},
-              removeListener: () => {},
-              hasListener: () => false,
-              hasListeners: () => false,
-            },
+          const makeArea = (area: string, readOnly = false) => {
+            const call = (method: string) => invokeExtension(`storage.${area}.${method}`)
+            const run = (method: string, args: any[], callback?: Function) =>
+              call(method)(...args, ...(callback ? [callback] : []))
+            const api: any = {
+              get(...raw: any[]) {
+                const { args, callback } = split('get', raw, 1)
+                const [keys] = args
+                if (keys !== undefined && keys !== null && typeof keys !== 'string') {
+                  if (Array.isArray(keys)) {
+                    if (!isKeyList(keys)) throw fail('get', "Error at parameter 'keys': Value did not match any choice.")
+                  } else if (!isObject(keys)) {
+                    throw fail('get')
+                  }
+                }
+                let wanted = keys
+                if (isObject(keys)) {
+                  try {
+                    wanted = storableItems(keys)
+                  } catch (e: any) {
+                    return rejectLater(e, callback)
+                  }
+                }
+                return run('get', [wanted === undefined ? null : wanted], callback)
+              },
+              getKeys(...raw: any[]) {
+                const { callback } = split('getKeys', raw, 0)
+                return run('getKeys', [], callback)
+              },
+              getBytesInUse(...raw: any[]) {
+                const { args, callback } = split('getBytesInUse', raw, 1)
+                const [keys] = args
+                if (keys !== undefined && keys !== null && typeof keys !== 'string' && !isKeyList(keys)) {
+                  throw fail('getBytesInUse')
+                }
+                return run('getBytesInUse', [keys === undefined ? null : keys], callback)
+              },
+              set(...raw: any[]) {
+                const { args, callback } = split('set', raw, 1)
+                const [items] = args
+                if (!items || typeof items !== 'object' || Array.isArray(items)) throw fail('set')
+                if (readOnly) return run('set', [{}], callback)
+                let converted: any
+                try {
+                  converted = storableItems(items)
+                } catch (e: any) {
+                  return rejectLater(e, callback)
+                }
+                return run('set', [converted], callback)
+              },
+              remove(...raw: any[]) {
+                const { args, callback } = split('remove', raw, 1)
+                const [keys] = args
+                if (typeof keys !== 'string' && !isKeyList(keys)) throw fail('remove')
+                return run('remove', [keys], callback)
+              },
+              clear(...raw: any[]) {
+                const { callback } = split('clear', raw, 0)
+                return run('clear', [], callback)
+              },
+              setAccessLevel(...raw: any[]) {
+                const { args, callback } = split('setAccessLevel', raw, 1)
+                const [options] = args
+                if (!isObject(options)) throw fail('setAccessLevel')
+                const level = options.accessLevel
+                if (level !== 'TRUSTED_AND_UNTRUSTED_CONTEXTS' && level !== 'TRUSTED_CONTEXTS') {
+                  throw fail(
+                    'setAccessLevel',
+                    level === undefined
+                      ? "Error at parameter 'accessOptions': Missing required property 'accessLevel'."
+                      : "Error at parameter 'accessOptions': Error at property 'accessLevel': Value must be one of TRUSTED_AND_UNTRUSTED_CONTEXTS, TRUSTED_CONTEXTS.",
+                  )
+                }
+                return run('setAccessLevel', [{ accessLevel: level }], callback)
+              },
+            }
+            return api
+          }
+
+          // storage.onChanged hears the shell's areas from the main process,
+          // and Electron's own areas from Electron: session, and the local
+          // store content scripts write to, whose changes an extension's
+          // worker listens for. The two never report the same write.
+          const shellChanged = new ExtensionEvent('storage.onChanged')
+          const nativeChanged = (base as any)?.onChanged
+          const makeEvent = (only?: string) => {
+            const wrappers = new Map<Function, { shell: Function; native: Function }>()
+            return {
+              addListener(callback: Function) {
+                if (typeof callback !== 'function' || wrappers.has(callback)) return
+                const shell = (changes: any, area: string) => {
+                  if (only && area !== only) return
+                  if (only) callback(changes)
+                  else callback(changes, area)
+                }
+                const native = (changes: any, area: string) => {
+                  if (only && area !== only) return
+                  if (only) callback(changes)
+                  else callback(changes, area)
+                }
+                wrappers.set(callback, { shell, native })
+                shellChanged.addListener(shell as any)
+                try {
+                  nativeChanged?.addListener?.(native)
+                } catch {}
+              },
+              removeListener(callback: Function) {
+                const wrapper = wrappers.get(callback)
+                if (!wrapper) return
+                wrappers.delete(callback)
+                shellChanged.removeListener(wrapper.shell as any)
+                try {
+                  nativeChanged?.removeListener?.(wrapper.native)
+                } catch {}
+              },
+              hasListener: (callback: Function) => wrappers.has(callback),
+              hasListeners: () => wrappers.size > 0,
+            }
+          }
+
+          const local = makeArea('local')
+          local.onChanged = makeEvent('local')
+          const sync = makeArea('sync')
+          sync.onChanged = makeEvent('sync')
+          const managed = makeArea('managed', true)
+          managed.onChanged = makeEvent('managed')
+
+          // Electron's own session area, with the same onChanged as the others.
+          const nativeSession = (base as any)?.session
+          let session: any = nativeSession
+          if (nativeSession) {
+            session = {}
+            for (const key of ['get', 'getKeys', 'set', 'remove', 'clear', 'getBytesInUse', 'setAccessLevel']) {
+              if (typeof nativeSession[key] === 'function') session[key] = nativeSession[key].bind(nativeSession)
+            }
+            if ('QUOTA_BYTES' in nativeSession) session.QUOTA_BYTES = nativeSession.QUOTA_BYTES
+            session.onChanged = makeEvent('session')
           }
 
           return {
             ...base,
-            onChanged,
-            local: ipcLocal,
-            managed: ipcManaged,
-            session: (base as any)?.session || ipcLocal,
-            sync: {
-              ...(base as any)?.sync ?? ipcLocal,
-              onChanged,
-              get: cbWrapStorageGet(invokeExtension('storage.sync.get')),
-              set: cbWrap(invokeExtension('storage.sync.set')),
-              remove: cbWrap(invokeExtension('storage.sync.remove')),
-              clear: cbWrap(invokeExtension('storage.sync.clear')),
-              getBytesInUse: cbWrap(invokeExtension('storage.sync.getBytesInUse')),
-            },
+            onChanged: makeEvent(),
+            local,
+            sync,
+            managed,
+            session,
           }
         },
       },
@@ -1535,21 +1787,39 @@ export const injectExtensionAPIs = () => {
 
     const getPath = (root: any, dotted: string) =>
       dotted.split('.').reduce((node, key) => (node == null ? undefined : node[key]), root)
+    // Chromium sets its own bindings on `chrome` again whenever an extension
+    // loads or unloads in the session, which put Electron's back in place of
+    // these in every running service worker. It cannot replace a property
+    // that is not configurable, so the namespaces on `chrome` itself are not.
+    const ownRoots = new WeakSet<object>()
+    const defineOn = (node: any, key: string, value: any, root: any) =>
+      Object.defineProperty(node, key, {
+        value,
+        enumerable: true,
+        configurable: node !== root,
+        writable: true,
+      })
     const setPath = (root: any, dotted: string, value: any) => {
       const parts = dotted.split('.')
       let node = root
       for (const part of parts.slice(0, -1)) {
-        if (!node[part] || typeof node[part] !== 'object') {
-          Object.defineProperty(node, part, { value: {}, enumerable: true, configurable: true, writable: true })
+        let next = node[part]
+        if (!next || typeof next !== 'object' || (node === root && !ownRoots.has(next))) {
+          const copy: any = {}
+          if (next && typeof next === 'object') {
+            for (const key of Object.keys(next)) {
+              try {
+                copy[key] = next[key]
+              } catch {}
+            }
+          }
+          defineOn(node, part, copy, root)
+          if (node === root) ownRoots.add(copy)
+          next = copy
         }
-        node = node[part]
+        node = next
       }
-      Object.defineProperty(node, parts[parts.length - 1], {
-        value,
-        enumerable: true,
-        configurable: true,
-        writable: true,
-      })
+      defineOn(node, parts[parts.length - 1], value, root)
     }
     const deletePath = (root: any, dotted: string) => {
       const parts = dotted.split('.')
@@ -1603,6 +1873,11 @@ export const injectExtensionAPIs = () => {
       const def = (apiDefinitions as any)[apiName]
       const spec = schema?.[apiName]
       const gate = { ...(spec || {}), ...(def || {}) }
+      // An offscreen document gets chrome.runtime and nothing else, as in Chrome.
+      if (context.offscreen && apiName !== 'runtime') {
+        deletePath(chrome, apiName)
+        continue
+      }
       if (!isAllowed(gate)) {
         // Chrome leaves the namespace out entirely without its permission.
         if (isGated(gate)) deletePath(chrome, apiName)
@@ -1636,7 +1911,9 @@ export const injectExtensionAPIs = () => {
             Object.defineProperty(browserAlias, root, {
               value: (chrome as any)[root],
               enumerable: true,
-              configurable: true,
+              // As on `chrome`: Chromium would put its own bindings back.
+              configurable: false,
+              writable: true,
             })
           } else if (root in browserAlias) {
             delete browserAlias[root]
@@ -1646,6 +1923,16 @@ export const injectExtensionAPIs = () => {
     }
 
     // Remove access to internals
+
+    if (context.offscreen) {
+      // Electron's own namespaces too; Chrome's page timing functions stay.
+      for (const key of Object.keys(chrome)) {
+        if (key === 'runtime' || key === 'csi' || key === 'loadTimes') continue
+        try {
+          delete chrome[key]
+        } catch {}
+      }
+    }
 
     delete (globalThis as any).electron
 
@@ -1657,9 +1944,19 @@ export const injectExtensionAPIs = () => {
     void 0 // no return
   }
 
+  // Which kind of extension page this is, which only the main process knows:
+  // an offscreen document gets a smaller chrome object. Asked once, while the
+  // page loads, before any of its scripts run.
+  let context: { offscreen?: boolean } = {}
+  if (process.type !== 'service-worker') {
+    try {
+      context = ipcRenderer.sendSync('crx-context-info') || {}
+    } catch {}
+  }
+
   if (!process.contextIsolated) {
     console.warn(`injectExtensionAPIs: context isolation disabled in ${location.href}`)
-    mainWorldScript(API_CONSTANTS, API_SCHEMA)
+    mainWorldScript(API_CONSTANTS, API_SCHEMA, context)
     return
   }
 
@@ -1672,12 +1969,12 @@ export const injectExtensionAPIs = () => {
     if ('executeInMainWorld' in contextBridge) {
       ;(contextBridge as any).executeInMainWorld({
         func: mainWorldScript,
-        args: [API_CONSTANTS, API_SCHEMA],
+        args: [API_CONSTANTS, API_SCHEMA, context],
       })
     } else {
       // TODO(mv3): remove webFrame usage
       webFrame.executeJavaScript(
-        `(${mainWorldScript})(${JSON.stringify(API_CONSTANTS)}, ${JSON.stringify(API_SCHEMA)});`,
+        `(${mainWorldScript})(${JSON.stringify(API_CONSTANTS)}, ${JSON.stringify(API_SCHEMA)}, ${JSON.stringify(context)});`,
       )
     }
   } catch (error) {

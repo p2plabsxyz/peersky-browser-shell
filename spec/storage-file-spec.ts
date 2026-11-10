@@ -129,11 +129,14 @@ describe('chrome.storage files that cannot be read', () => {
     expect(await readStorageFile(file, crypto, 'local')).to.deep.equal({ count: 1 })
   })
 
-  it('drops keys that could reach the prototype', async () => {
+  it('keeps keys such as __proto__ as plain data, as Chrome stores them, without reaching a prototype', async () => {
     const crypto = fakeCrypto()
     await fs.writeFile(file, '{"__proto__": {"polluted": true}, "constructor": 1, "ok": 1}')
     const data = await readStorageFile(file, crypto, 'local')
-    expect(data).to.deep.equal({ ok: 1 })
+    expect(Object.getPrototypeOf(data)).to.equal(null)
+    expect(Object.keys(data)).to.deep.equal(['__proto__', 'constructor', 'ok'])
+    expect(data['__proto__']).to.deep.equal({ polluted: true })
+    expect((data as any).polluted).to.equal(undefined)
     expect(({} as any).polluted).to.equal(undefined)
   })
 })

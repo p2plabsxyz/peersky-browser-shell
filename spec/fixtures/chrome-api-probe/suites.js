@@ -1533,6 +1533,9 @@ suite('extension', async (t) => {
 // ---------------------------------------------------------------- content script
 // Reads what content.js recorded in the page it ran in.
 suite('contentScript', async (t, env) => {
+  // What content.js finds in storage.session depends on this, which the
+  // storage suite sets too: set here, so the result does not depend on order.
+  await chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_AND_UNTRUSTED_CONTEXTS' })
   const tab = await openTab(env.base + 'page?content')
   const read = async () => {
     const [r] = await chrome.scripting.executeScript({ target: { tabId: tab.id }, func: () => document.documentElement.dataset.probe || null })

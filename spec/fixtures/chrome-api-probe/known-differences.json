@@ -1,20 +1,64 @@
 {
   "differences": [
     {
+      "path": "probe.contentSettings.javascript.enforced.*",
+      "reason": "With JavaScript blocked the page runs no script in Chrome or the shell, but Electron fails the extension's MAIN world script (\"Script not run\") where Chrome returns a null result."
+    },
+    {
+      "path": "probe.userScripts.*",
+      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
+    },
+    {
+      "path": "probe.extension.isAllowedFileSchemeAccess.ok",
+      "reason": "Electron gives an extension file access only when the host loads it with allowFileAccess, which the shell cannot read back, so it answers false unless the host's isFileSchemeAccessAllowed hook says yes, where Chrome lets an unpacked extension read files."
+    },
+    {
+      "path": "probe.offscreen.message.ok.namespaces.0",
+      "reason": "Electron has no chrome.csi or chrome.loadTimes, Chrome's old page timing functions, so an offscreen document lists only runtime."
+    },
+    {
+      "path": "probe.offscreen.message.ok.namespaces.1",
+      "reason": "Electron has no chrome.csi or chrome.loadTimes, Chrome's old page timing functions, so an offscreen document lists only runtime."
+    },
+    {
+      "path": "probe.offscreen.message.ok.namespaces.2",
+      "reason": "Electron has no chrome.csi or chrome.loadTimes, Chrome's old page timing functions, so an offscreen document lists only runtime."
+    },
+    {
+      "path": "probe.contentScript.recorded.openOrClosedShadowRoot",
+      "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and they have no chrome.dom."
+    },
+    {
+      "path": "probe.contentScript.recorded.surface.dom.openOrClosedShadowRoot",
+      "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and they have no chrome.dom."
+    },
+    {
+      "path": "probe.contentScript.recorded.surface.csi",
+      "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and Electron has no chrome.csi, Chrome's old page timing function."
+    },
+    {
+      "path": "probe.contentScript.recorded.surface.loadTimes",
+      "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and Electron has no chrome.loadTimes, Chrome's old page timing function."
+    },
+    {
+      "path": "probe.contentScript.recorded.surface.extension.ViewType.*",
+      "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and Electron's chrome.extension there has no ViewType."
+    },
+    {
+      "path": "probe.contentScript.recorded.surface.extension.inIncognitoContext",
+      "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and Electron's chrome.extension there has no inIncognitoContext."
+    },
+    {
+      "path": "probe.contentScript.recorded.surface.runtime.OnLoadedReason.*",
+      "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and runtime.OnLoadedReason is newer than the Chromium in Electron 43."
+    },
+    {
       "path": "probe.surface.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (216 differences)."
     },
     {
       "path": "probe.runtime.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (7 differences)."
-    },
-    {
-      "path": "probe.storage.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (28 differences)."
-    },
-    {
-      "path": "probe.alarms.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (6 differences)."
     },
     {
       "path": "probe.tabs.*",
@@ -25,24 +69,8 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (68 differences)."
     },
     {
-      "path": "probe.action.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (17 differences)."
-    },
-    {
-      "path": "probe.contextMenus.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (12 differences)."
-    },
-    {
-      "path": "probe.notifications.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
-    },
-    {
       "path": "probe.permissions.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
-    },
-    {
-      "path": "probe.management.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (26 differences)."
     },
     {
       "path": "probe.sessions.*",
@@ -53,28 +81,8 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (33 differences)."
     },
     {
-      "path": "probe.contentSettings.javascript.enforced.*",
-      "reason": "With JavaScript blocked the page runs no script in Chrome or the shell, but Electron fails the extension's MAIN world script (\"Script not run\") where Chrome returns a null result."
-    },
-    {
       "path": "probe.tts.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (9 differences)."
-    },
-    {
-      "path": "probe.offscreen.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (49 differences)."
-    },
-    {
-      "path": "probe.sidePanel.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (1 differences)."
-    },
-    {
-      "path": "probe.commands.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (7 differences)."
-    },
-    {
-      "path": "probe.identity.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
     },
     {
       "path": "probe.capture.*",
@@ -83,18 +91,6 @@
     {
       "path": "probe.declarativeContent.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (16 differences)."
-    },
-    {
-      "path": "probe.extension.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (1 differences)."
-    },
-    {
-      "path": "probe.contentScript.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (14 differences)."
-    },
-    {
-      "path": "probe.management.toggle.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
     },
     {
       "path": "peer.surface.*",
@@ -109,20 +105,12 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (2 differences)."
     },
     {
-      "path": "peer.management.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (4 differences)."
-    },
-    {
       "path": "pages.probe.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (218 differences)."
     },
     {
       "path": "pages.peer.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (23 differences)."
-    },
-    {
-      "path": "probe.userScripts.*",
-      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
     }
   ]
 }

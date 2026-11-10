@@ -335,7 +335,13 @@ const eventListenerEquals = (a: EventListener) => (b: EventListener) => {
  * in the order Chrome gives them.
  */
 function isUrgentNavigationEvent(eventName: string) {
-  return eventName.startsWith('webNavigation.') || eventName.startsWith('webRequest.')
+  return (
+    // storage.session changes reach the worker at once from Electron, so the
+    // shell's areas must not wait either, or a worker hears them out of order.
+    eventName === 'storage.onChanged' ||
+    eventName.startsWith('webNavigation.') ||
+    eventName.startsWith('webRequest.')
+  )
 }
 
 export class ExtensionRouter {

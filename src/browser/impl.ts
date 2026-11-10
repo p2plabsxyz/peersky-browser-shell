@@ -83,4 +83,70 @@ export interface ChromeExtensionImpl {
    * kept, except an extension's own when it asks for originTypes.extension.
    */
   getProtectedOrigins?(): string[]
+
+  /**
+   * How an extension was installed, as chrome.management reports it:
+   * 'normal' (from a store), 'development' (an unpacked folder), 'admin'
+   * (policy), 'sideload' or 'other'. Without this hook every extension is
+   * 'development', which is what Chrome says of an unpacked one. An
+   * extension that is not 'development' also gets Chrome's 30 second minimum
+   * for alarms.
+   */
+  getExtensionInstallType?(extension: Electron.Extension): string | undefined
+
+  /**
+   * Turns another extension off or on for chrome.management.setEnabled.
+   * The host unloads or loads it and remembers the choice across restarts.
+   * Without this hook the shell unloads it from the session and loads it
+   * again from its folder, and it comes back enabled after a restart.
+   */
+  setExtensionEnabled?(details: {
+    id: string
+    path: string
+    enabled: boolean
+  }): Promise<void> | void
+
+  /**
+   * Asks the person whether to remove an extension, for
+   * chrome.management.uninstall and uninstallSelf({ showConfirmDialog }).
+   * `by` is the extension asking, when it is not the one being removed.
+   * Without this hook the shell asks with a system dialog.
+   */
+  confirmUninstall?(details: {
+    extension: Electron.Extension
+    by?: Electron.Extension
+  }): Promise<boolean> | boolean
+
+  /**
+   * Removes an extension for good once the person agreed. The host deletes
+   * its files and its own records. Without this hook the shell only unloads
+   * it from the session and drops what the shell kept for it (storage,
+   * alarms).
+   */
+  uninstallExtension?(extension: Electron.Extension): Promise<void> | void
+
+  /**
+   * Whether the extension may read file:// URLs (Electron's allowFileAccess
+   * load option, which the shell cannot read back), for
+   * chrome.extension.isAllowedFileSchemeAccess. Without this hook the answer
+   * is false, the safe one.
+   */
+  isFileSchemeAccessAllowed?(extension: Electron.Extension): boolean
+
+  /**
+   * Whether the extension is on the toolbar, for action.getUserSettings.
+   * Without this hook every action is on the toolbar. Call
+   * `extensions.api.browserAction.userSettingsChanged(id)` when it changes.
+   */
+  isActionOnToolbar?(extension: Electron.Extension): boolean
+
+  /**
+   * The policy an administrator set for an extension, which it reads with
+   * chrome.storage.managed (keys and JSON values). Without this hook there is
+   * none, and the extension reads an empty store. Call
+   * `extensions.api.storageSync.managedChanged(id, changes)` when it changes.
+   */
+  getManagedStorage?(
+    extension: Electron.Extension,
+  ): Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>
 }

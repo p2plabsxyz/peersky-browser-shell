@@ -15,7 +15,10 @@ export class RuntimeAPI extends EventEmitter {
 
   constructor(
     private ctx: ExtensionContext,
-    private offscreen?: { getContexts(extensionId: string): any[] },
+    private offscreen?: {
+      getContexts(extensionId: string): any[]
+      isOffscreenDocument?(webContents: Electron.WebContents): boolean
+    },
   ) {
     super()
 
@@ -26,7 +29,7 @@ export class RuntimeAPI extends EventEmitter {
     handle('runtime.openOptionsPage', this.openOptionsPage)
     handle('runtime.sendNativeMessage', this.sendNativeMessage, { permission: 'nativeMessaging' })
     handle('runtime.requestUpdateCheck', this.requestUpdateCheck)
-    handle('extension.setUpdateUrlData', () => undefined)
+    handle('extension.setUpdateUrlData', this.setUpdateUrlData)
     handle('extension.getViews', this.getViews)
     handle('extension.isAllowedFileSchemeAccess', this.isAllowedFileSchemeAccess)
     handle('extension.isAllowedIncognitoAccess', this.isAllowedIncognitoAccess)
@@ -153,6 +156,7 @@ export class RuntimeAPI extends EventEmitter {
     }
     if (details) {
       router.sendEventWhenListening(extension.id, 'runtime.onInstalled', [details])
+      if (details.reason === 'install') this.ctx.store.emit('extension-installed', extension)
     } else if (!this.startedThisRun.has(extension.id)) {
       router.sendEventWhenListening(extension.id, 'runtime.onStartup', [])
     }
@@ -180,10 +184,25 @@ export class RuntimeAPI extends EventEmitter {
     return false
   }
 
+  private setUpdateUrlData = (_event: ExtensionEvent, data: unknown) => {
+    if (typeof data !== 'string') {
+      throw new Error('Error in invocation of extension.setUpdateUrlData(string data): No matching signature.')
+    }
+  }
+
   /** Updates come from the host, if at all; the shell itself never has one. */
   private requestUpdateCheck = () => ({ status: 'no_update', version: '' })
 
-  private isAllowedFileSchemeAccess = () => false
+  /** Only the host knows whether it loaded the extension with file access. */
+  private isAllowedFileSchemeAccess = ({ extension }: ExtensionEvent) => {
+    try {
+      return this.ctx.store.impl.isFileSchemeAccessAllowed?.(extension) === true
+    } catch {
+      return false
+    }
+  }
+
+  /** The shell never runs extensions in a private session's tabs. */
   private isAllowedIncognitoAccess = () => false
 
   private getViews = (
@@ -199,6 +218,8 @@ export class RuntimeAPI extends EventEmitter {
 
     const all = webContents.getAllWebContents().filter((wc) => {
       if (wc.isDestroyed() || wc.session !== this.ctx.session) return false
+      // An offscreen document is its own kind of context, never a view.
+      if (this.offscreen?.isOffscreenDocument?.(wc)) return false
       const rawUrl = wc.getURL?.()
       if (!rawUrl || !rawUrl.startsWith('chrome-extension://')) return false
       try {

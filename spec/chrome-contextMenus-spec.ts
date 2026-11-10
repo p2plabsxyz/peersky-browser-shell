@@ -79,7 +79,7 @@ describe('chrome.contextMenus', () => {
   describe('remove()', () => {
     it('removes item', async () => {
       const id = uuid()
-      await browser.crx.exec('contextMenus.create', { id })
+      await browser.crx.exec('contextMenus.create', { id, title: 'removed' })
       await browser.crx.exec('contextMenus.remove', id)
       const items = await getContextMenuItems()
       expect(items).to.be.empty
@@ -88,8 +88,8 @@ describe('chrome.contextMenus', () => {
 
   describe('removeAll()', () => {
     it('removes all items', async () => {
-      await browser.crx.exec('contextMenus.create', {})
-      await browser.crx.exec('contextMenus.create', {})
+      await browser.crx.exec('contextMenus.create', { title: 'one' })
+      await browser.crx.exec('contextMenus.create', { title: 'two' })
       await browser.crx.exec('contextMenus.removeAll')
       const items = await getContextMenuItems()
       expect(items).to.be.empty

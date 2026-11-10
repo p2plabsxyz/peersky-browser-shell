@@ -2,9 +2,57 @@ import { Menu, MenuItem } from 'electron'
 import { MenuItemConstructorOptions } from 'electron/main'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
+import { tryParseMatchPattern } from '../match-pattern'
 import { ContextMenuType, getIconImage, matchesPattern } from './common'
 
-type ContextItemProps = chrome.contextMenus.CreateProperties & { id: string }
+type ContextItemProps = Omit<chrome.contextMenus.CreateProperties, 'id' | 'parentId'> & {
+  id: string | number
+  parentId?: string | number
+}
+
+/** Chrome keeps string and number ids apart: 5 and '5' are two items. */
+const menuKey = (id: unknown) => (typeof id === 'number' ? `n:${id}` : `s:${String(id)}`)
+
+/** Limits that keep one extension from growing menus without end. */
+const MAX_ITEMS = 1000
+const MAX_PATTERNS = 100
+const MAX_TITLE = 1000
+
+/** Chrome's limit on top-level items an action's menu shows. */
+const ACTION_MENU_TOP_LEVEL_LIMIT = 6
+
+const PROP_KEYS = [
+  'id',
+  'type',
+  'title',
+  'checked',
+  'contexts',
+  'visible',
+  'parentId',
+  'documentUrlPatterns',
+  'targetUrlPatterns',
+  'enabled',
+]
+
+/** Only the properties Chrome knows, as plain values. */
+function sanitizeProps(input: Record<string, unknown>): Partial<ContextItemProps> {
+  const out: Record<string, unknown> = {}
+  for (const key of PROP_KEYS) {
+    if (!(key in input) || input[key] === undefined || input[key] === null) continue
+    let value = input[key]
+    if (key === 'title' && typeof value === 'string') value = value.slice(0, MAX_TITLE)
+    if (Array.isArray(value)) value = value.slice(0, MAX_PATTERNS + 1)
+    out[key] = value
+  }
+  return out as Partial<ContextItemProps>
+}
+
+/** A service worker or an event page: Chrome wants ids and no onclick there. */
+const isLazyBackground = (extension: Electron.Extension) => {
+  const manifest = extension.manifest as chrome.runtime.Manifest
+  if (manifest.manifest_version === 3) return true
+  return (manifest as chrome.runtime.ManifestV2).background?.persistent === false
+}
 
 type ContextItemConstructorOptions = {
   extension: Electron.Extension
@@ -106,7 +154,7 @@ export class ContextMenusAPI {
       contextItems = new Map()
       this.menus.set(extensionId, contextItems)
     }
-    contextItems.set(props.id, props)
+    contextItems.set(menuKey(props.id), props)
   }
 
   private buildMenuItem = (opts: ContextItemConstructorOptions) => {
@@ -119,13 +167,14 @@ export class ContextMenusAPI {
     }
 
     const menuItemOptions: MenuItemConstructorOptions = {
-      id: props.id,
+      id: String(props.id),
       type: props.type as any,
       label: params ? formatTitle(props.title || '', params) : props.title || '',
       icon,
-      enabled: props.enabled,
+      enabled: props.enabled !== false,
+      checked: props.type === 'checkbox' || props.type === 'radio' ? props.checked === true : undefined,
       click: () => {
-        this.onClicked(extension.id, props.id, webContents, params)
+        this.onClicked(extension.id, props, webContents, params)
       },
     }
 
@@ -138,14 +187,14 @@ export class ContextMenusAPI {
     // Group by ID
     for (const item of menuItemTemplates) {
       const menuItem = this.buildMenuItem(item)
-      itemMap.set(item.props.id, menuItem)
+      itemMap.set(menuKey(item.props.id), menuItem)
     }
 
     // Organize in tree
     for (const item of menuItemTemplates) {
-      const menuItem = itemMap.get(item.props.id)
-      if (item.props.parentId) {
-        const parentMenuItem = itemMap.get(`${item.props.parentId}`)
+      const menuItem = itemMap.get(menuKey(item.props.id))
+      if (item.props.parentId !== undefined) {
+        const parentMenuItem = itemMap.get(menuKey(item.props.parentId))
         if (parentMenuItem) {
           const submenu = (parentMenuItem.submenu || []) as Electron.MenuItemConstructorOptions[]
           submenu.push(menuItem!)
@@ -172,9 +221,9 @@ export class ContextMenusAPI {
     // Build all final MenuItems in-order
     for (const item of menuItemTemplates) {
       // Items with parents will be handled recursively
-      if (item.props.parentId) continue
+      if (item.props.parentId !== undefined) continue
 
-      const menuItem = itemMap.get(item.props.id)!
+      const menuItem = itemMap.get(menuKey(item.props.id))!
       menuItems.push(buildFromTemplate(menuItem))
     }
 
@@ -215,7 +264,7 @@ export class ContextMenusAPI {
         }
       }
 
-      const topLevelItems = extensionMenuItemOptions.filter((opt) => !opt.props.parentId)
+      const topLevelItems = extensionMenuItemOptions.filter((opt) => opt.props.parentId === undefined)
 
       if (topLevelItems.length > 1) {
         // Create new top-level item to group children
@@ -233,7 +282,7 @@ export class ContextMenusAPI {
 
         // Reassign children to group item
         const children = extensionMenuItemOptions.map((opt) =>
-          opt.props.parentId
+          opt.props.parentId !== undefined
             ? opt
             : {
                 ...opt,
@@ -249,7 +298,7 @@ export class ContextMenusAPI {
         // Set all top-level children to show icon
         const children = extensionMenuItemOptions.map((opt) => ({
           ...opt,
-          showIcon: !opt.props.parentId,
+          showIcon: opt.props.parentId === undefined,
         }))
         menuItemOptions = [...menuItemOptions, ...children]
       }
@@ -274,74 +323,148 @@ export class ContextMenusAPI {
         contextTypes: new Set<ContextMenuType>(['all', menuType]),
       }
 
+      let topLevel = 0
       for (const [, props] of extensionItems) {
-        if (matchesConditions(props, conditions)) {
-          const menuItem = { extension, props, webContents: activeTab }
-          menuItemOptions.push(menuItem)
-        }
+        if (!matchesConditions(props, conditions)) continue
+        // An action's menu shows only the first few top-level items.
+        if (props.parentId === undefined && ++topLevel > ACTION_MENU_TOP_LEVEL_LIMIT) continue
+        const menuItem = { extension, props, webContents: activeTab }
+        menuItemOptions.push(menuItem)
       }
     }
 
     return this.buildMenuItemsFromTemplate(menuItemOptions)
   }
 
-  private create = ({ extension }: ExtensionEvent, createProperties: ContextItemProps) => {
-    const { id, type, title } = createProperties
+  private find(extensionId: string, id: unknown) {
+    return this.menus.get(extensionId)?.get(menuKey(id))
+  }
 
+  private notFound(id: unknown) {
+    return new Error(`Cannot find menu item with id ${id}`)
+  }
+
+  /** Chrome's checks shared by create and update, on the item as it would be. */
+  private check(extension: Electron.Extension, props: ContextItemProps) {
+    const type = props.type || 'normal'
+    if (type !== 'separator' && typeof props.title !== 'string') {
+      throw new Error('All menu items except for separators must have a title')
+    }
+    const contexts = Array.isArray(props.contexts) ? props.contexts : []
+    if (contexts.includes('launcher' as any)) {
+      throw new Error("Only packaged apps are allowed to use 'launcher' context")
+    }
+    for (const key of ['documentUrlPatterns', 'targetUrlPatterns'] as const) {
+      const patterns = props[key]
+      if (patterns === undefined || patterns === null) continue
+      if (!Array.isArray(patterns)) throw new Error(`Invalid url pattern '${patterns}'`)
+      if (patterns.length > MAX_PATTERNS) throw new Error(`Invalid url pattern '${patterns[MAX_PATTERNS]}'`)
+      for (const pattern of patterns) {
+        if (typeof pattern !== 'string' || !tryParseMatchPattern(pattern)) {
+          throw new Error(`Invalid url pattern '${pattern}'`)
+        }
+      }
+    }
+    if (props.parentId !== undefined && props.parentId !== null) {
+      const parent = this.find(extension.id, props.parentId)
+      if (!parent) throw this.notFound(props.parentId)
+      if ((parent.type || 'normal') !== 'normal') throw new Error('Parent items must have type "normal"')
+    }
+  }
+
+  /** The item and every item under it, deepest first. */
+  private descendants(extensionId: string, id: unknown): ContextItemProps[] {
+    const items = this.menus.get(extensionId)
+    if (!items) return []
+    const out: ContextItemProps[] = []
+    const walk = (parentKey: string) => {
+      for (const item of items.values()) {
+        if (item.parentId !== undefined && item.parentId !== null && menuKey(item.parentId) === parentKey) {
+          walk(menuKey(item.id))
+          out.push(item)
+        }
+      }
+    }
+    walk(menuKey(id))
+    return out
+  }
+
+  private create = ({ extension }: ExtensionEvent, createProperties: unknown) => {
+    if (!createProperties || typeof createProperties !== 'object' || Array.isArray(createProperties)) {
+      throw new Error(
+        'Error in invocation of contextMenus.create(contextMenus.CreateProperties createProperties, optional function callback): No matching signature.',
+      )
+    }
+    const props = sanitizeProps(createProperties as Record<string, unknown>) as ContextItemProps
+    if ((createProperties as any).onclick !== undefined && isLazyBackground(extension)) {
+      throw new Error(
+        'Extensions using event pages or Service Workers cannot pass an onclick parameter to chrome.contextMenus.create. Instead, use the chrome.contextMenus.onClicked event.',
+      )
+    }
+    if (props.id === undefined || props.id === null) {
+      throw new Error(
+        'Extensions using event pages or Service Workers must pass an id parameter to chrome.contextMenus.create',
+      )
+    }
+    if (typeof props.id !== 'string' && typeof props.id !== 'number') {
+      throw new Error(`Cannot find menu item with id ${props.id}`)
+    }
+    if (this.find(extension.id, props.id)) {
+      throw new Error(`Cannot create item with duplicate id ${props.id}`)
+    }
     const items = this.menus.get(extension.id)
-    if (items?.has(id)) {
-      // Duplicate menu item id for this extension
-      return
+    if (items && items.size >= MAX_ITEMS) {
+      throw new Error(`An extension cannot have more than ${MAX_ITEMS} menu items.`)
     }
-
-    if (!title && type !== 'separator') {
-      // Title required for non-separator items
-      return
-    }
-
-    this.addContextItem(extension.id, createProperties)
+    this.check(extension, props)
+    if (props.type === 'radio' && props.checked === undefined) props.checked = false
+    if (props.type === 'checkbox' && props.checked === undefined) props.checked = false
+    this.addContextItem(extension.id, props)
   }
 
   private update = (
     { extension }: ExtensionEvent,
-    menuItemId: string | number,
-    updateProperties: chrome.contextMenus.UpdateProperties,
+    menuItemId: unknown,
+    updateProperties: unknown,
   ) => {
-    const id = String(menuItemId)
-    const items = this.menus.get(extension.id)
-    const existing = items?.get(id)
-    if (!existing) return
+    if ((typeof menuItemId !== 'string' && typeof menuItemId !== 'number') || !updateProperties || typeof updateProperties !== 'object') {
+      throw new Error(
+        'Error in invocation of contextMenus.update([integer|string] id, object updateProperties, optional function callback): No matching signature.',
+      )
+    }
+    const existing = this.find(extension.id, menuItemId)
+    if (!existing) throw this.notFound(menuItemId)
 
-    const updatable: (keyof chrome.contextMenus.UpdateProperties)[] = [
-      'title',
-      'contexts',
-      'checked',
-      'enabled',
-      'parentId',
-      'targetUrlPatterns',
-      'documentUrlPatterns',
-      'type',
-      'visible',
-    ]
-    const existingRecord = existing as unknown as Record<string, unknown>
-    const updateRecord = updateProperties as Record<string, unknown>
-    for (const key of updatable) {
-      const value = updateRecord[key]
-      if (value !== undefined) {
-        existingRecord[key] = value
+    const changes = sanitizeProps(updateProperties as Record<string, unknown>)
+    delete changes.id
+    const next = { ...existing, ...changes } as ContextItemProps
+    if ('parentId' in changes) {
+      const parentId = changes.parentId
+      // Chrome refuses an item as its own parent, or under one of its own
+      // children, with this message.
+      if (parentId !== undefined && parentId !== null) {
+        if (menuKey(parentId) === menuKey(existing.id)) throw new Error('Unknown error.')
+        if (this.descendants(extension.id, existing.id).some((d) => menuKey(d.id) === menuKey(parentId))) {
+          throw new Error('Unknown error.')
+        }
       }
     }
+    this.check(extension, next)
+    Object.assign(existing, changes)
   }
 
-  private remove = ({ extension }: ExtensionEvent, menuItemId: string | number) => {
-    const id = String(menuItemId)
-    const items = this.menus.get(extension.id)
-    if (items && items.has(id)) {
-      items.delete(id)
-      if (items.size === 0) {
-        this.menus.delete(extension.id)
-      }
+  private remove = ({ extension }: ExtensionEvent, menuItemId: unknown) => {
+    if (typeof menuItemId !== 'string' && typeof menuItemId !== 'number') {
+      throw new Error(
+        'Error in invocation of contextMenus.remove([integer|string] menuItemId, optional function callback): No matching signature.',
+      )
     }
+    const items = this.menus.get(extension.id)
+    if (!items || !this.find(extension.id, menuItemId)) throw this.notFound(menuItemId)
+    // Removing an item removes the items under it, as in Chrome.
+    for (const child of this.descendants(extension.id, menuItemId)) items.delete(menuKey(child.id))
+    items.delete(menuKey(menuItemId))
+    if (items.size === 0) this.menus.delete(extension.id)
   }
 
   private removeAll = ({ extension }: ExtensionEvent) => {
@@ -350,7 +473,7 @@ export class ContextMenusAPI {
 
   private onClicked(
     extensionId: string,
-    menuItemId: string,
+    props: ContextItemProps,
     webContents: Electron.WebContents,
     params?: Electron.ContextMenuParams,
   ) {
@@ -362,20 +485,37 @@ export class ContextMenusAPI {
       return
     }
 
-    const data: chrome.contextMenus.OnClickData = {
-      selectionText: params?.selectionText,
-      checked: false, // TODO
-      menuItemId,
-      frameId: -1, // TODO: match frameURL with webFrameMain in Electron 12
-      frameUrl: params?.frameURL,
+    // A checkbox flips; a radio item turns on and its group turns off.
+    const wasChecked = props.checked === true
+    if (props.type === 'checkbox') props.checked = !wasChecked
+    if (props.type === 'radio') {
+      const items = [...(this.menus.get(extensionId)?.values() ?? [])]
+      const index = items.indexOf(props)
+      for (const direction of [-1, 1]) {
+        for (let i = index + direction; i >= 0 && i < items.length; i += direction) {
+          const other = items[i]
+          if (other.type !== 'radio' || menuKey(other.parentId) !== menuKey(props.parentId)) break
+          other.checked = false
+        }
+      }
+      props.checked = true
+    }
+
+    const data: Record<string, unknown> = {
+      menuItemId: props.id,
       editable: params?.isEditable || false,
-      // TODO(mv3): limit possible string enums
-      mediaType: params?.mediaType as any,
-      wasChecked: false, // TODO
-      pageUrl: params?.pageURL as any, // types are inaccurate
-      linkUrl: params?.linkURL,
-      parentMenuItemId: -1, // TODO
-      srcUrl: params?.srcURL,
+      pageUrl: params?.pageURL,
+      frameId: params?.frameURL ? -1 : 0,
+    }
+    if (props.parentId !== undefined) data.parentMenuItemId = props.parentId
+    if (params?.frameURL) data.frameUrl = params.frameURL
+    if (params?.linkURL) data.linkUrl = params.linkURL
+    if (params?.srcURL) data.srcUrl = params.srcURL
+    if (params?.selectionText) data.selectionText = params.selectionText
+    if (params?.mediaType && params.mediaType !== 'none') data.mediaType = params.mediaType
+    if (props.type === 'checkbox' || props.type === 'radio') {
+      data.wasChecked = wasChecked
+      data.checked = props.checked === true
     }
 
     this.ctx.store.noteUserGesture(extensionId)

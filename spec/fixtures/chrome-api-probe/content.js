@@ -3,6 +3,10 @@
 // answers tabs.sendMessage and tabs.connect from the probe's worker.
 ;(async () => {
   const out = { surface: probe.apiSurface(chrome) }
+  // A new id every time the page loads: only its type can be compared.
+  if (typeof out.surface['runtime.dynamicId'] === 'string') {
+    out.surface['runtime.dynamicId'] = out.surface['runtime.dynamicId'].split(':')[0]
+  }
   try {
     out.sendMessage = await probe.withTimeout(chrome.runtime.sendMessage({ probe: 'suites' }), 3000, 'sendMessage').then((names) => Array.isArray(names))
   } catch (e) {

@@ -18,16 +18,13 @@ export class StorageLockedError extends Error {
   }
 }
 
-const FORBIDDEN_STORAGE_KEYS = new Set(['__proto__', 'constructor', 'prototype'])
-
-export function isForbiddenStorageKey(key: string): boolean {
-  return FORBIDDEN_STORAGE_KEYS.has(key)
-}
-
+/**
+ * Chrome stores any key, '__proto__' and 'constructor' among them. They are
+ * kept as plain data in an object with no prototype, so no key can reach one.
+ */
 export function sanitizeLoadedStorage(raw: Record<string, any>): Record<string, any> {
-  const out: Record<string, any> = {}
+  const out: Record<string, any> = Object.create(null)
   for (const k of Object.keys(raw)) {
-    if (isForbiddenStorageKey(k)) continue
     out[k] = raw[k]
   }
   return out
@@ -56,7 +53,7 @@ export async function readStorageFile(
   try {
     buffer = await fs.readFile(filePath)
   } catch (err: any) {
-    if (err?.code === 'ENOENT') return {}
+    if (err?.code === 'ENOENT') return Object.create(null)
     console.error(`Failed to load storage ${label} data`, err)
     throw new Error(`Extension storage could not be read (${err?.code || 'error'}). Nothing was changed.`)
   }
@@ -66,7 +63,7 @@ export async function readStorageFile(
   // is told from the file itself.
   const utf8 = buffer.toString('utf-8')
   const firstNonWs = utf8.match(/[^\s]/)?.[0]
-  if (!firstNonWs) return {}
+  if (!firstNonWs) return Object.create(null)
   const plain = firstNonWs === '{' || firstNonWs === '['
   if (!plain && !crypto.isEncryptionAvailable()) {
     console.error(`Encrypted storage ${label} data cannot be opened right now; it is kept as it is`)
@@ -85,7 +82,7 @@ export async function readStorageFile(
     const aside = `${filePath}.unreadable-${Date.now()}`
     await fs.rename(filePath, aside)
     console.error(`Unreadable storage ${label} data set aside as ${path.basename(aside)}`, err)
-    return {}
+    return Object.create(null)
   }
 }
 

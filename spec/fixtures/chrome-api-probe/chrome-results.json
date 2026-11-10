@@ -7021,7 +7021,7 @@
           "runtime.RequestUpdateCheckStatus.THROTTLED": "string:throttled",
           "runtime.RequestUpdateCheckStatus.UPDATE_AVAILABLE": "string:update_available",
           "runtime.connect": "function",
-          "runtime.dynamicId": "string:4871766e-ca5f-4dd0-b3e9-ca4ca250c368",
+          "runtime.dynamicId": "string",
           "runtime.getManifest": "function",
           "runtime.getURL": "function",
           "runtime.getVersion": "function",

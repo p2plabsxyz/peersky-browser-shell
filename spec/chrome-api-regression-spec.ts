@@ -163,11 +163,12 @@ describe('untested API behavior regressions', () => {
       const commands = await harness.handlers.get('commands.getAll')!({
         extension: { id: 'ext-cmd' },
       })
+      // Chrome shows a shortcut in the platform's own form.
       expect(commands).to.deep.equal([
         {
           name: 'toggle',
           description: 'Toggle action',
-          shortcut: 'Ctrl+Shift+Y',
+          shortcut: process.platform === 'darwin' ? '⇧⌘Y' : 'Ctrl+Shift+Y',
         },
       ])
     })
