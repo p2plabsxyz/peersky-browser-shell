@@ -93,7 +93,8 @@ describe('platform APIs', () => {
   })
 
   afterEach(async () => {
-    await fs.rm(temp, { recursive: true, force: true })
+    // A save may still be writing its temporary file; try again then.
+    await fs.rm(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
   })
 
   describe('chrome.storage', () => {

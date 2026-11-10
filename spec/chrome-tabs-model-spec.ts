@@ -309,7 +309,7 @@ describe('chrome.tabs model', () => {
       expect(refused('chrome://kill')).to.equal("I'm sorry. I'm afraid I can't do that.")
       expect(refused('chrome://settings')).to.equal('Cannot navigate to a chrome:// page.')
       expect(refused('peersky://settings')).to.equal('Cannot navigate to a peersky:// page.')
-      expect(refused('chrome-extension://other/page.html')).to.equal("Cannot navigate to another extension's page.")
+      expect(refused('chrome-extension://other/page.html')).to.equal('allowed')
       expect(refused('view-source:peersky://settings')).to.equal('Cannot navigate to a peersky:// page.')
       expect(refused('devtools://devtools/bundled/inspector.html')).to.match(/^Cannot navigate to a devtools:\/\/ page/)
       expect(refused('https://example.com/')).to.equal('allowed')

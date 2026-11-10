@@ -243,7 +243,8 @@ export function prepareNavigationUrl(
     case 'peersky:':
       throw new Error('Cannot navigate to a peersky:// page.')
     case 'chrome-extension:':
-      if (url.hostname !== extension.id) throw new Error("Cannot navigate to another extension's page.")
+      // Chrome opens another extension's page too: it runs with that
+      // extension's rights only, and the opener cannot script it.
       break
     case 'view-source:':
       // The page shown is the one inside, which the same rules apply to.
