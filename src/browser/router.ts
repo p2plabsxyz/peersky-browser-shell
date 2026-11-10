@@ -94,6 +94,24 @@ const getSessionFromEvent = (event: IpcAnyEvent): Electron.Session => {
   }
 }
 
+/** The page or worker an IPC came from. */
+const eventSenderUrl = (event: IpcAnyEvent): string | undefined => {
+  try {
+    if (event.type === 'service-worker') return (event as any).serviceWorker?.scope
+    return (event as any).senderFrame?.url
+  } catch {
+    return undefined
+  }
+}
+
+/** Events that need a permission their namespace does not need for its calls. */
+const EVENT_PERMISSIONS: Record<string, string> = {
+  'management.onDisabled': 'management',
+  'management.onEnabled': 'management',
+  'management.onInstalled': 'management',
+  'management.onUninstalled': 'management',
+}
+
 const getHostFromEvent = (event: IpcAnyEvent) => {
   if (event.type === 'service-worker') {
     return event.serviceWorker
@@ -115,8 +133,8 @@ interface RoutingDelegateObserver {
     meta: CallMeta,
     ...args: any[]
   ): Promise<void>
-  addListener(listener: EventListener, extensionId: string, eventName: string): void
-  removeListener(listener: EventListener, extensionId: string, eventName: string): void
+  addListener(listener: EventListener, extensionId: string, eventName: string, senderUrl?: string): void
+  removeListener(listener: EventListener, extensionId: string, eventName: string, senderUrl?: string): void
 }
 
 let gRoutingDelegate: RoutingDelegate
@@ -226,7 +244,7 @@ class RoutingDelegate {
             type: event.type,
             extensionId,
           }
-    return observer?.addListener(listener, extensionId, eventName)
+    return observer?.addListener(listener, extensionId, eventName, eventSenderUrl(event))
   }
 
   private onRemoveListener = (
@@ -246,7 +264,7 @@ class RoutingDelegate {
             type: event.type,
             extensionId,
           }
-    return observer?.removeListener(listener, extensionId, eventName)
+    return observer?.removeListener(listener, extensionId, eventName, eventSenderUrl(event))
   }
 }
 
@@ -405,13 +423,25 @@ export class ExtensionRouter {
     })
   }
 
-  addListener(listener: EventListener, extensionId: string, eventName: string) {
+  addListener(listener: EventListener, extensionId: string, eventName: string, senderUrl?: string) {
     const { listeners, session } = this
 
     const sessionExtensions = session.extensions || session
     const extension = sessionExtensions.getExtension(extensionId)
     if (!extension) {
       throw new Error(`extension not registered in session [extensionId:${extensionId}]`)
+    }
+
+    // An extension listens only as itself, and only to events of APIs it
+    // holds the permission for: the event's name comes from its own page,
+    // which could ask for any.
+    if (senderUrl !== undefined && !senderUrl.startsWith(`chrome-extension://${extensionId}/`)) {
+      d(`ignoring '${eventName}' listener: sent from outside ${extensionId}`)
+      return
+    }
+    if (!this.mayHear(extension, eventName)) {
+      d(`ignoring '${eventName}' listener: ${extensionId} lacks the permission`)
+      return
     }
 
     if (!listeners.has(eventName)) {
@@ -585,7 +615,8 @@ export class ExtensionRouter {
     }
   }
 
-  removeListener(listener: EventListener, extensionId: string, eventName: string) {
+  removeListener(listener: EventListener, extensionId: string, eventName: string, senderUrl?: string) {
+    if (senderUrl !== undefined && !senderUrl.startsWith(`chrome-extension://${extensionId}/`)) return
     const { listeners } = this
 
     const eventListeners = listeners.get(eventName)
@@ -604,6 +635,19 @@ export class ExtensionRouter {
     if (eventListeners.length === 0) {
       listeners.delete(eventName)
     }
+  }
+
+  /** Whether the extension holds the permission an event needs, now. */
+  private mayHear(extension: Electron.Extension | string, eventName: string) {
+    const required = EVENT_PERMISSIONS[eventName] ?? permissionForHandler(eventName)
+    if (!required) return true
+    const ext =
+      typeof extension === 'string'
+        ? (this.session.extensions || this.session).getExtension(extension)
+        : extension
+    if (!ext) return false
+    const anyOf = Array.isArray(required) ? required : [required]
+    return anyOf.some((p) => this.hasPermission(ext, p))
   }
 
   private getHandler(handlerName: string) {
@@ -730,12 +774,19 @@ export class ExtensionRouter {
     let matchedCount = 0
     let sentCount = 0
     let serviceWorkerAsync = 0
+    const allowed = new Map<string, boolean>()
+    const mayHear = (extensionId: string) => {
+      if (!allowed.has(extensionId)) allowed.set(extensionId, this.mayHear(extensionId, eventName))
+      return allowed.get(extensionId)!
+    }
     for (const listener of eventListeners) {
       const { type, extensionId } = listener
 
       if (targetExtensionId && targetExtensionId !== extensionId) {
         continue
       }
+      // A permission given up since the listener was added counts too.
+      if (!mayHear(extensionId)) continue
       matchedCount++
 
       if (type === 'service-worker') {
@@ -799,8 +850,11 @@ export class ExtensionRouter {
     const deadListeners: EventListener[] = []
     let sentCount = 0
     let serviceWorkerAsync = 0
+    const allowed = new Map<string, boolean>()
     for (const listener of eventListeners) {
       const { type, extensionId } = listener
+      if (!allowed.has(extensionId)) allowed.set(extensionId, this.mayHear(extensionId, eventName))
+      if (!allowed.get(extensionId)) continue
       const args = mapArgs(extensionId)
 
       if (type === 'service-worker') {
