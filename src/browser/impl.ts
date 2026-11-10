@@ -62,4 +62,25 @@ export interface ChromeExtensionImpl {
    * searches with DuckDuckGo.
    */
   getSearchUrl?(text: string): Promise<string | undefined> | string | undefined
+
+  /**
+   * The host's own content setting for a page (its site permissions), used by
+   * chrome.contentSettings.<type>.get and getContentSetting() when no
+   * extension rule decides. Return 'allow', 'block', 'ask' or, for cookies,
+   * 'session_only'; anything else, or nothing, means Chrome's default.
+   * `type` is the chrome.contentSettings name: 'javascript', 'notifications',
+   * 'location', 'camera', ...
+   */
+  getContentSetting?(details: {
+    type: string
+    primaryUrl: string
+    secondaryUrl: string
+  }): string | undefined
+
+  /**
+   * Origins whose storage chrome.browsingData never removes, such as the
+   * host's own pages ('peersky://settings'). Extensions' origins are always
+   * kept, except an extension's own when it asks for originTypes.extension.
+   */
+  getProtectedOrigins?(): string[]
 }

@@ -53,24 +53,8 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (33 differences)."
     },
     {
-      "path": "probe.browsingData.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (59 differences)."
-    },
-    {
-      "path": "probe.contentSettings.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (25 differences)."
-    },
-    {
-      "path": "probe.fontSettings.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (30 differences)."
-    },
-    {
-      "path": "probe.privacy.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (56 differences)."
-    },
-    {
-      "path": "probe.proxy.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
+      "path": "probe.contentSettings.javascript.enforced.*",
+      "reason": "With JavaScript blocked the page runs no script in Chrome or the shell, but Electron fails the extension's MAIN world script (\"Script not run\") where Chrome returns a null result."
     },
     {
       "path": "probe.tts.*",

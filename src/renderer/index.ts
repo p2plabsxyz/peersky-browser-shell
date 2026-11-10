@@ -249,37 +249,15 @@ export const injectExtensionAPIs = () => {
       }
     }
 
-    // chrome.types.ChromeSetting<any>
-    class ChromeSetting {
-      private value: any = undefined
-
-      get(_details?: any, cb?: Function) {
-        const result = {
-          value: this.value,
-          levelOfControl: 'controllable_by_this_extension' as const,
-        }
-        if (typeof cb === 'function') cb(result)
-        return result
-      }
-
-      set(details?: any, cb?: Function) {
-        if (details && typeof details === 'object' && 'value' in details) {
-          this.value = details.value
-        }
-        if (typeof cb === 'function') cb()
-      }
-
-      clear(_details?: any, cb?: Function) {
-        this.value = undefined
-        if (typeof cb === 'function') cb()
-      }
-
-      onChange = {
-        addListener: () => {},
-        removeListener: () => {},
-        hasListener: () => false,
-      }
-    }
+    // A types.ChromeSetting kept by the main process, such as
+    // chrome.privacy.network.webRTCIPHandlingPolicy: calls go to `${name}.get`
+    // and so on, and changes come as `${name}.onChange`.
+    const chromeSetting = (name: string) => ({
+      get: invokeExtension(`${name}.get`),
+      set: invokeExtension(`${name}.set`),
+      clear: invokeExtension(`${name}.clear`),
+      onChange: new ExtensionEvent(`${name}.onChange`),
+    })
 
     class Event<T extends Function> implements Partial<chrome.events.Event<T>> {
       private listeners: T[] = []
@@ -544,6 +522,57 @@ export const injectExtensionAPIs = () => {
             >('contextMenus.onClicked'),
           }
 
+          return api
+        },
+      },
+
+      contentSettings: {
+        permission: 'contentSettings',
+        factory: (base) => {
+          const api: any = { ...base }
+          const types = [
+            'automaticDownloads',
+            'autoVerify',
+            'camera',
+            'clipboard',
+            'cookies',
+            'images',
+            'javascript',
+            'location',
+            'microphone',
+            'notifications',
+            'popups',
+            'sound',
+          ]
+          // One ContentSetting per type; the main process gets the type first.
+          for (const type of types) {
+            const call = (method: string) => {
+              const invoke = invokeExtension(`contentSettings.${method}`)
+              return (...args: any[]) => invoke(type, ...args)
+            }
+            const getResourceIdentifiers = call('getResourceIdentifiers')
+            api[type] = {
+              get: call('get'),
+              set: call('set'),
+              clear: call('clear'),
+              // Chrome calls back with no arguments at all, not undefined.
+              getResourceIdentifiers: (...args: any[]) => {
+                const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+                if (!callback) return getResourceIdentifiers(...args)
+                return getResourceIdentifiers(...args, () => callback())
+              },
+            }
+          }
+          // Gone from Chrome, which keeps them as calls that do nothing and
+          // return nothing, not even a promise.
+          const nothing = (...args: any[]) => {
+            const callback = args[args.length - 1]
+            if (typeof callback === 'function') setTimeout(() => callback(), 0)
+            return undefined
+          }
+          for (const type of ['fullscreen', 'mouselock', 'plugins', 'unsandboxedPlugins']) {
+            api[type] = { get: nothing, set: nothing, clear: nothing, getResourceIdentifiers: nothing }
+          }
           return api
         },
       },
@@ -963,21 +992,39 @@ export const injectExtensionAPIs = () => {
       privacy: {
         permission: 'privacy',
         factory: (base) => {
-          return {
-            ...base,
-            network: {
-              networkPredictionEnabled: new ChromeSetting(),
-              webRTCIPHandlingPolicy: new ChromeSetting(),
-            },
-            services: {
-              autofillAddressEnabled: new ChromeSetting(),
-              autofillCreditCardEnabled: new ChromeSetting(),
-              passwordSavingEnabled: new ChromeSetting(),
-            },
-            websites: {
-              hyperlinkAuditingEnabled: new ChromeSetting(),
-            },
+          // Chrome 157's settings on desktop; protectedContentEnabled is
+          // Windows and ChromeOS only.
+          const groups: Record<string, string[]> = {
+            network: ['networkPredictionEnabled', 'webRTCIPHandlingPolicy'],
+            services: [
+              'alternateErrorPagesEnabled',
+              'autofillAddressEnabled',
+              'autofillCreditCardEnabled',
+              'autofillEnabled',
+              'autofillSettings',
+              'passwordSavingEnabled',
+              'safeBrowsingEnabled',
+              'safeBrowsingExtendedReportingEnabled',
+              'searchSuggestEnabled',
+              'spellingServiceEnabled',
+              'translationServiceEnabled',
+            ],
+            websites: [
+              'adMeasurementEnabled',
+              'doNotTrackEnabled',
+              'fledgeEnabled',
+              'hyperlinkAuditingEnabled',
+              'referrersEnabled',
+              'thirdPartyCookiesAllowed',
+              'topicsEnabled',
+            ],
           }
+          const api: any = { ...base }
+          for (const [group, names] of Object.entries(groups)) {
+            api[group] = {}
+            for (const name of names) api[group][name] = chromeSetting(`privacy.${group}.${name}`)
+          }
+          return api
         },
       },
 

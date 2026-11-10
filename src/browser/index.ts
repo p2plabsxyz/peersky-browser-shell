@@ -55,6 +55,7 @@ import { TabCaptureAPI } from './api/tab-capture'
 import { DesktopCaptureAPI } from './api/desktop-capture'
 import { DeclarativeContentAPI } from './api/declarative-content'
 import { ExtensionPermissions } from './permissions'
+import { ExtensionSettings } from './api/chrome-setting'
 
 export type { BookmarkChange, BookmarkImportNode } from './api/bookmarks'
 export type {
@@ -536,11 +537,26 @@ export class ElectronChromeExtensions extends EventEmitter {
     return this.api.webRequest.notifyOnBeforeRequest(details)
   }
 
-  /** webRequest.onBeforeSendHeaders bridge. */
-  notifyWebRequestOnBeforeSendHeaders(
+  /**
+   * webRequest.onBeforeSendHeaders bridge. The host calls it from its own
+   * `session.webRequest.onBeforeSendHeaders` and sends the request with the
+   * headers it returns. Besides extensions' listeners, it applies
+   * chrome.privacy (DNT, Referer) and chrome.contentSettings cookie rules, so
+   * a host that skips it for a request skips those too.
+   */
+  async notifyWebRequestOnBeforeSendHeaders(
     details: Electron.OnBeforeSendHeadersListenerDetails,
   ): Promise<{ requestHeaders?: Record<string, string | string[]> }> {
-    return this.api.webRequest.notifyOnBeforeSendHeaders(details)
+    // Chrome sets these before extensions see the request.
+    const withPrivacy = this.api.privacy.requestHeadersFor(details.requestHeaders)
+    const headers =
+      this.api.contentSettings.requestHeadersFor(details, withPrivacy ?? details.requestHeaders) ?? withPrivacy
+    if (!headers) return this.api.webRequest.notifyOnBeforeSendHeaders(details)
+    const result = await this.api.webRequest.notifyOnBeforeSendHeaders({
+      ...details,
+      requestHeaders: headers as Record<string, string>,
+    })
+    return result.requestHeaders ? result : { ...result, requestHeaders: headers }
   }
 
   /** webRequest.onSendHeaders bridge. */
@@ -548,11 +564,21 @@ export class ElectronChromeExtensions extends EventEmitter {
     return this.api.webRequest.notifyOnSendHeaders(details)
   }
 
-  /** webRequest.onHeadersReceived bridge. */
-  notifyWebRequestOnHeadersReceived(
+  /**
+   * webRequest.onHeadersReceived bridge. The host calls it from its own
+   * `session.webRequest.onHeadersReceived` and uses the headers it returns.
+   * Besides extensions' listeners, it applies chrome.contentSettings rules for
+   * JavaScript, images and cookies.
+   */
+  async notifyWebRequestOnHeadersReceived(
     details: Electron.OnHeadersReceivedListenerDetails,
   ): Promise<{ responseHeaders?: Record<string, string | string[]> }> {
-    return this.api.webRequest.notifyOnHeadersReceived(details)
+    const result = await this.api.webRequest.notifyOnHeadersReceived(details)
+    const headers = this.api.contentSettings.responseHeadersFor(
+      details,
+      result.responseHeaders ?? details.responseHeaders,
+    )
+    return headers ? { ...result, responseHeaders: headers } : result
   }
 
   notifyWebRequestOnBeforeRedirect(
@@ -578,6 +604,50 @@ export class ElectronChromeExtensions extends EventEmitter {
     details: Electron.OnErrorOccurredListenerDetails,
   ): Promise<void> {
     return this.api.webRequest.notifyOnErrorOccurred(details)
+  }
+
+  /**
+   * The chrome.privacy settings that count now, as
+   * { network: {...}, services: {...}, websites: {...} }. Most are the host's
+   * own features (autofill, password saving, search suggestions, Safe
+   * Browsing, ...), for it to follow; changes come as a
+   * 'privacy-setting-changed' event with { name, value, controlledBy }.
+   */
+  getPrivacySettings(): Record<string, Record<string, unknown>> {
+    return this.api.privacy.getAll()
+  }
+
+  /**
+   * What chrome.contentSettings says for a page, such as
+   * getContentSetting('notifications', 'https://a.example/'): 'allow',
+   * 'block', 'ask' or (cookies) 'session_only'. The host asks it from its own
+   * permission, window-open and download handlers; a change comes as a
+   * 'content-settings-changed' event. Undefined for an unknown type or URL.
+   */
+  getContentSetting(type: string, primaryUrl: string, secondaryUrl?: string): string | undefined {
+    return this.api.contentSettings.getContentSetting(type, primaryUrl, secondaryUrl)
+  }
+
+  /**
+   * chrome.fontSettings fonts and sizes in Electron's webPreferences names,
+   * for the host to pass to new tabs: Electron cannot change the fonts of a
+   * page that is already open. Changes come as a 'font-settings-changed' event
+   * with the same object.
+   */
+  getFontWebPreferences() {
+    return this.api.fontSettings.getWebPreferences()
+  }
+
+  /**
+   * Drops the settings, proxy and content setting rules an extension set, as
+   * Chrome does when it is uninstalled. Electron does not tell an uninstall
+   * from an unload, so the host calls this when it removes an extension.
+   */
+  async clearExtensionSettings(extensionId: string) {
+    await Promise.all([
+      this.api.contentSettings.forget(extensionId),
+      ExtensionSettings.for(this.ctx).forget(extensionId),
+    ])
   }
 
   /**

@@ -4951,6 +4951,143 @@
       },
       "removePasswords": {
         "error": "Requested data type is deprecated."
+      },
+      "settings.values": {
+        "ok": {
+          "originTypes": {
+            "extension": false,
+            "protectedWeb": false,
+            "unprotectedWeb": true
+          },
+          "minutesAgo": 60,
+          "dataToRemove": {
+            "cache": true,
+            "cacheStorage": true,
+            "cookies": true,
+            "downloads": true,
+            "fileSystems": true,
+            "formData": false,
+            "history": true,
+            "indexedDB": true,
+            "localStorage": true,
+            "passwords": false,
+            "pluginData": false,
+            "serviceWorkers": true
+          },
+          "dataRemovalPermitted": {
+            "cache": true,
+            "cacheStorage": true,
+            "cookies": true,
+            "downloads": true,
+            "fileSystems": true,
+            "formData": true,
+            "history": true,
+            "indexedDB": true,
+            "localStorage": true,
+            "passwords": true,
+            "pluginData": true,
+            "serviceWorkers": true
+          }
+        }
+      },
+      "remove.passwordsIgnored": {
+        "ok": "<undefined>"
+      },
+      "remove.originsAndExclude": {
+        "error": "Don't set both 'origins' and 'excludeOrigins' at the same time."
+      },
+      "remove.originsHistory": {
+        "error": "At least one data type doesn't support filtering by origin."
+      },
+      "remove.excludeDownloads": {
+        "error": "At least one data type doesn't support filtering by origin."
+      },
+      "remove.sinceString": {
+        "error": "Error in invocation of browsingData.remove(browsingData.RemovalOptions options, browsingData.DataTypeSet dataToRemove, optional function callback): Error at parameter 'options': Error at property 'since': Invalid type: expected number, found string."
+      },
+      "remove.unknownType": {
+        "error": "Error in invocation of browsingData.remove(browsingData.RemovalOptions options, browsingData.DataTypeSet dataToRemove, optional function callback): Error at parameter 'dataToRemove': Unexpected property: 'bogus'."
+      },
+      "remove.noArgs": {
+        "error": "Error in invocation of browsingData.remove(browsingData.RemovalOptions options, browsingData.DataTypeSet dataToRemove, optional function callback): No matching signature."
+      },
+      "remove.oneArg": {
+        "error": "Error in invocation of browsingData.remove(browsingData.RemovalOptions options, browsingData.DataTypeSet dataToRemove, optional function callback): No matching signature."
+      },
+      "remove.unknownOriginType": {
+        "error": "Error in invocation of browsingData.remove(browsingData.RemovalOptions options, browsingData.DataTypeSet dataToRemove, optional function callback): Error at parameter 'options': Error at property 'originTypes': Unexpected property: 'bogus'."
+      },
+      "remove.extensionOnly": {
+        "ok": "<undefined>"
+      },
+      "removeAppcache": {
+        "ok": "<undefined>"
+      },
+      "removeWebSQL": {
+        "ok": "<undefined>"
+      },
+      "removePluginData": {
+        "ok": "<undefined>"
+      },
+      "removeCacheStorage": {
+        "ok": "<undefined>"
+      },
+      "removeFileSystems": {
+        "ok": "<undefined>"
+      },
+      "removeCookies.noArgs": {
+        "error": "Error in invocation of browsingData.removeCookies(browsingData.RemovalOptions options, optional function callback): No matching signature."
+      },
+      "origins.empty": {
+        "error": "Error in invocation of browsingData.removeCookies(browsingData.RemovalOptions options, optional function callback): Error at parameter 'options': Error at property 'origins': Array must have at least 1 items; found 0."
+      },
+      "origins.notArray": {
+        "error": "Error in invocation of browsingData.removeCookies(browsingData.RemovalOptions options, optional function callback): Error at parameter 'options': Error at property 'origins': Invalid type: expected array, found string."
+      },
+      "origin.https://a.example/path": {
+        "ok": "<undefined>"
+      },
+      "origin.a.example": {
+        "error": "'a.example' is not a valid origin."
+      },
+      "origin.https://a.example:99999": {
+        "error": "'https://a.example:99999' is not a valid origin."
+      },
+      "origin.file:///tmp": {
+        "ok": "<undefined>"
+      },
+      "origin.data:text/plain,x": {
+        "error": "'data:text/plain,x' is not a valid origin."
+      },
+      "origin.about:blank": {
+        "error": "'about:blank' is not a valid origin."
+      },
+      "origin.https://": {
+        "error": "'https://' is not a valid origin."
+      },
+      "origin.HTTPS://A.EXAMPLE": {
+        "ok": "<undefined>"
+      },
+      "cookie.sinceLater": {
+        "ok": "kept"
+      },
+      "cookie.otherSite": {
+        "ok": "kept"
+      },
+      "cookie.excluded": {
+        "ok": "kept"
+      },
+      "cookie.otherPortSameHost": {
+        "ok": "gone"
+      },
+      "cookie.lastMinute": {
+        "ok": "gone"
+      },
+      "localStorage.otherOrigin": {
+        "ok": "1"
+      },
+      "localStorage.origin": {
+        "ok": null
       }
     },
     "contentSettings": {
@@ -5055,6 +5192,308 @@
       },
       "notifications.clear": {
         "ok": "<undefined>"
+      },
+      "set.noPattern": {
+        "error": "Error in invocation of contentSettings.ContentSetting.set(object details, optional function callback): Error at parameter 'details': Missing required property 'primaryPattern'."
+      },
+      "set.settingNumber": {
+        "error": "Invalid invocation: Error at property 'setting': Invalid type: expected contentSettings.JavascriptContentSetting, found integer."
+      },
+      "set.noSetting": {
+        "error": "Error in invocation of contentSettings.ContentSetting.set(object details, optional function callback): Error at parameter 'details': Missing required property 'setting'."
+      },
+      "set.extraProp": {
+        "error": "Error in invocation of contentSettings.ContentSetting.set(object details, optional function callback): Error at parameter 'details': Unexpected property: 'foo'."
+      },
+      "set.badScope": {
+        "error": "Error in invocation of contentSettings.ContentSetting.set(object details, optional function callback): Error at parameter 'details': Error at property 'scope': Value must be one of incognito_session_only, regular."
+      },
+      "set.incognito": {
+        "error": "You do not have permission to access incognito preferences."
+      },
+      "set.noArgs": {
+        "error": "Error in invocation of contentSettings.ContentSetting.set(object details, optional function callback): No matching signature."
+      },
+      "clear.incognito": {
+        "ok": "<undefined>"
+      },
+      "clear.noArgs": {
+        "error": "Error in invocation of contentSettings.ContentSetting.clear(object details, optional function callback): No matching signature."
+      },
+      "get.badUrl": {
+        "error": "The URL \"not a url\" is invalid."
+      },
+      "get.badSecondary": {
+        "error": "The URL \"nope\" is invalid."
+      },
+      "get.incognito": {
+        "error": "You do not have permission to access incognito preferences."
+      },
+      "get.noUrl": {
+        "error": "Error in invocation of contentSettings.ContentSetting.get(object details, optional function callback): Error at parameter 'details': Missing required property 'primaryUrl'."
+      },
+      "get.noArgs": {
+        "error": "Error in invocation of contentSettings.ContentSetting.get(object details, optional function callback): No matching signature."
+      },
+      "get.resourceIdentifier": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "getResourceIdentifiers.extraArg": {
+        "error": "Error in invocation of contentSettings.ContentSetting.getResourceIdentifiers(optional function callback): No matching signature."
+      },
+      "pattern.*://*/*": {
+        "ok": "<undefined>"
+      },
+      "pattern.https://*.a.example/*": {
+        "ok": "<undefined>"
+      },
+      "pattern.file:///tmp/x.html": {
+        "ok": "<undefined>"
+      },
+      "pattern.http://127.0.0.1:8080/*": {
+        "ok": "<undefined>"
+      },
+      "pattern.http://a.example:*/*": {
+        "ok": "<undefined>"
+      },
+      "pattern.file:///*": {
+        "error": "Path wildcards in file URL patterns are not allowed."
+      },
+      "pattern.http://127.0.0.1/path": {
+        "error": "Specific paths are not allowed."
+      },
+      "pattern.chrome://settings/*": {
+        "error": "Invalid scheme."
+      },
+      "pattern.ftp://x/*": {
+        "error": "Invalid scheme."
+      },
+      "pattern.http://127.0.0.1": {
+        "error": "Empty path."
+      },
+      "pattern.*": {
+        "error": "Missing scheme separator."
+      },
+      "pattern.http://*.127.0.0.1/*": {
+        "error": "The pattern \"*\" is invalid."
+      },
+      "pattern.http:/x/*": {
+        "error": "Wrong scheme type."
+      },
+      "pattern.http://*foo/*": {
+        "error": "Invalid host wildcard."
+      },
+      "pattern.http://a.example:99999/*": {
+        "error": "Invalid port."
+      },
+      "pattern.urn:x": {
+        "error": "Invalid scheme."
+      },
+      "pattern.chrome-extension://abc/*": {
+        "error": "Invalid scheme."
+      },
+      "pattern.matchesFile": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "pattern.clear": {
+        "ok": "<undefined>"
+      },
+      "secondary.bad": {
+        "error": "Missing scheme separator."
+      },
+      "secondary.notSupported": {
+        "error": "Embedded patterns are not supported for this setting."
+      },
+      "secondary.samePattern": {
+        "ok": "<undefined>"
+      },
+      "secondary.samePattern.get": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "secondary.cookies": {
+        "ok": "<undefined>"
+      },
+      "secondary.cookies.match": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "secondary.cookies.other": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "secondary.cookies.none": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "default.cameraAllow": {
+        "error": "'allow' is not supported as the default setting of camera."
+      },
+      "default.microphoneAllow": {
+        "error": "'allow' is not supported as the default setting of microphone."
+      },
+      "default.notificationsAllow": {
+        "ok": "<undefined>"
+      },
+      "default.notificationsAllow.get": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "autoVerify.siteRule": {
+        "error": "Site-specific settings are not allowed for this type. The URL pattern must be '<all_urls>'."
+      },
+      "autoVerify.everySite": {
+        "ok": "<undefined>"
+      },
+      "autoVerify.everySite.get": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "cookies.sessionOnly": {
+        "ok": "<undefined>"
+      },
+      "cookies.sessionOnly.get": {
+        "ok": {
+          "setting": "session_only"
+        }
+      },
+      "precedence.port": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "precedence.hostOverScheme": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "precedence.longerDomain": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "precedence.domainItself": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "precedence.overwrite": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "precedence.defaultPort": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "precedence.hostOverAll": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "allUrls.browserPage": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "allUrls.extensionPage": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "allUrls.file": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "allUrls.images.extensionPage": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "allUrls.images.browserPage": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "allUrls.notifications.extensionPage": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "allUrls.notifications.browserPage": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "allUrls.camera.extensionPage": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "allUrls.camera.browserPage": {
+        "ok": {
+          "setting": "allow"
+        }
+      },
+      "allUrls.sound.extensionPage": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "allUrls.sound.browserPage": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "allUrls.location.extensionPage": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "allUrls.location.browserPage": {
+        "ok": {
+          "setting": "block"
+        }
+      },
+      "fullscreen.setReturns": "undefined",
+      "fullscreen.get": {
+        "ok": "<undefined>"
+      },
+      "fullscreen.getResourceIdentifiers.callback": {
+        "ok": "<no args>"
+      },
+      "mouselock.setReturns": "undefined",
+      "mouselock.get": {
+        "ok": "<undefined>"
+      },
+      "mouselock.getResourceIdentifiers.callback": {
+        "ok": "<no args>"
+      },
+      "plugins.setReturns": "undefined",
+      "plugins.getResourceIdentifiers.callback": {
+        "ok": "<no args>"
+      },
+      "unsandboxedPlugins.setReturns": "undefined",
+      "unsandboxedPlugins.get": {
+        "ok": "<undefined>"
+      },
+      "unsandboxedPlugins.getResourceIdentifiers.callback": {
+        "ok": "<no args>"
+      },
+      "getResourceIdentifiers.callback": {
+        "ok": "<no args>"
       }
     },
     "fontSettings": {
@@ -5111,6 +5550,149 @@
       },
       "setDefaultFontSize.tooBig": {
         "ok": "<undefined>"
+      },
+      "getDefaultFontSize.big": {
+        "ok": 500
+      },
+      "getFont.badFamily": {
+        "error": "Error in invocation of fontSettings.getFont(object details, optional function callback): Error at parameter 'details': Error at property 'genericFamily': Value must be one of cursive, fantasy, fixed, math, sansserif, serif, standard."
+      },
+      "getFont.noArgs": {
+        "error": "Error in invocation of fontSettings.getFont(object details, optional function callback): No matching signature."
+      },
+      "getFont.extraProp": {
+        "error": "Error in invocation of fontSettings.getFont(object details, optional function callback): Error at parameter 'details': Unexpected property: 'foo'."
+      },
+      "setFont.noFontId": {
+        "error": "Error in invocation of fontSettings.setFont(object details, optional function callback): Error at parameter 'details': Missing required property 'fontId'."
+      },
+      "setFont.numberFontId": {
+        "error": "Error in invocation of fontSettings.setFont(object details, optional function callback): Error at parameter 'details': Error at property 'fontId': Invalid type: expected string, found integer."
+      },
+      "onFontChanged": {
+        "event": {
+          "fontId": "NoSuchFontX",
+          "genericFamily": "serif",
+          "levelOfControl": "controlled_by_this_extension",
+          "script": "Zyyy"
+        }
+      },
+      "getFont.unknownFont": {
+        "ok": {
+          "fontId": "NoSuchFontX",
+          "levelOfControl": "controlled_by_this_extension"
+        }
+      },
+      "onFontChanged.clear": {
+        "event": {
+          "keys": [
+            "fontId",
+            "genericFamily",
+            "levelOfControl",
+            "script"
+          ],
+          "genericFamily": "serif",
+          "script": "Zyyy",
+          "levelOfControl": "controllable_by_this_extension"
+        }
+      },
+      "onFontChanged.script": {
+        "event": {
+          "fontId": "Arial",
+          "genericFamily": "sansserif",
+          "levelOfControl": "controlled_by_this_extension",
+          "script": "Arab"
+        }
+      },
+      "getFont.script": {
+        "ok": {
+          "fontId": "Arial",
+          "levelOfControl": "controlled_by_this_extension"
+        }
+      },
+      "clearFont.script": {
+        "ok": "<undefined>"
+      },
+      "setFont.empty": {
+        "ok": "<undefined>"
+      },
+      "getFont.empty": {
+        "ok": {
+          "fontId": "",
+          "levelOfControl": "controlled_by_this_extension"
+        }
+      },
+      "size.string": {
+        "error": "Error in invocation of fontSettings.setDefaultFontSize(object details, optional function callback): Error at parameter 'details': Error at property 'pixelSize': Invalid type: expected integer, found string."
+      },
+      "size.fraction": {
+        "error": "Error in invocation of fontSettings.setDefaultFontSize(object details, optional function callback): Error at parameter 'details': Error at property 'pixelSize': Invalid type: expected integer, found number."
+      },
+      "size.missing": {
+        "error": "Error in invocation of fontSettings.setDefaultFontSize(object details, optional function callback): Error at parameter 'details': Missing required property 'pixelSize'."
+      },
+      "size.getExtraProp": {
+        "error": "Error in invocation of fontSettings.getDefaultFontSize(optional object details, optional function callback): Error at parameter 'details': Unexpected property: 'foo'."
+      },
+      "size.negative": {
+        "ok": "<undefined>"
+      },
+      "size.negative.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "pixelSize": -3
+        }
+      },
+      "onDefaultFontSizeChanged": {
+        "event": {
+          "levelOfControl": "controlled_by_this_extension",
+          "pixelSize": 20
+        }
+      },
+      "onDefaultFontSizeChanged.clear": {
+        "event": {
+          "levelOfControl": "controllable_by_this_extension",
+          "pixelSize": 16
+        }
+      },
+      "onMinimumFontSizeChanged": {
+        "event": {
+          "levelOfControl": "controlled_by_this_extension",
+          "pixelSize": 30
+        }
+      },
+      "getMinimumFontSize.after": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "pixelSize": 30
+        }
+      },
+      "onMinimumFontSizeChanged.clear": {
+        "event": {
+          "levelOfControl": "controllable_by_this_extension",
+          "pixelSize": 0
+        }
+      },
+      "onDefaultFixedFontSizeChanged": {
+        "event": {
+          "levelOfControl": "controlled_by_this_extension",
+          "pixelSize": 15
+        }
+      },
+      "getDefaultFixedFontSize.after": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "pixelSize": 15
+        }
+      },
+      "clearDefaultFixedFontSize": {
+        "ok": "<undefined>"
+      },
+      "getDefaultFixedFontSize.cleared": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "pixelSize": 13
+        }
       }
     },
     "privacy": {
@@ -5259,6 +5841,179 @@
       },
       "incognitoScope": {
         "error": "You do not have permission to access incognito preferences."
+      },
+      "services.autofillEnabled": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": true
+        }
+      },
+      "services.autofillSettings": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": []
+        }
+      },
+      "set.badType": {
+        "error": "Invalid invocation"
+      },
+      "set.noValue": {
+        "error": "Invalid invocation"
+      },
+      "set.noArgs": {
+        "error": "Error in invocation of types.ChromeSetting.set(object details, optional function callback): No matching signature."
+      },
+      "set.extraProp": {
+        "error": "Invalid invocation"
+      },
+      "set.badScope": {
+        "error": "Invalid invocation"
+      },
+      "get.noArgs": {
+        "error": "Error in invocation of types.ChromeSetting.get(object details, optional function callback): No matching signature."
+      },
+      "get.extraProp": {
+        "error": "Error in invocation of types.ChromeSetting.get(object details, optional function callback): Error at parameter 'details': Unexpected property: 'foo'."
+      },
+      "get.incognito": {
+        "error": "You do not have permission to access incognito preferences."
+      },
+      "set.incognitoPersistent": {
+        "error": "You do not have permission to access incognito preferences."
+      },
+      "clear.incognito": {
+        "ok": "<undefined>"
+      },
+      "regularOnly.set": {
+        "ok": "<undefined>"
+      },
+      "regularOnly.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": false
+        }
+      },
+      "regularOnly.clearRegular": {
+        "ok": "<undefined>"
+      },
+      "regularOnly.stillSet": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": false
+        }
+      },
+      "regularOnly.clear": {
+        "ok": "<undefined>"
+      },
+      "regularOnly.cleared": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": true
+        }
+      },
+      "onChange.sameAsDefault": {
+        "event": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": "default"
+        }
+      },
+      "onChange.setAgain": {
+        "event": "none"
+      },
+      "onChange.clear": {
+        "event": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": "default"
+        }
+      },
+      "onChange.clearAgain": {
+        "event": "none"
+      },
+      "autofillEnabled.set": {
+        "ok": "<undefined>"
+      },
+      "autofillEnabled.sharesAddress": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": false
+        }
+      },
+      "autofillEnabled.clear": {
+        "ok": "<undefined>"
+      },
+      "autofillSettings.set": {
+        "ok": "<undefined>"
+      },
+      "autofillSettings.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": [
+            {
+              "blockedTypes": [
+                "payments",
+                "contact_info"
+              ],
+              "urlPattern": "https://a.example/*"
+            }
+          ]
+        }
+      },
+      "autofillSettings.badValue": {
+        "error": "Invalid invocation"
+      },
+      "autofillSettings.badType": {
+        "error": "Invalid invocation"
+      },
+      "autofillSettings.clear": {
+        "ok": "<undefined>"
+      },
+      "sandbox.topicsEnabled.on": {
+        "error": "Extensions aren’t allowed to enable Privacy Sandbox APIs."
+      },
+      "sandbox.topicsEnabled.off": {
+        "ok": "<undefined>"
+      },
+      "sandbox.topicsEnabled.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": false
+        }
+      },
+      "sandbox.fledgeEnabled.on": {
+        "error": "Extensions aren’t allowed to enable Privacy Sandbox APIs."
+      },
+      "sandbox.fledgeEnabled.off": {
+        "ok": "<undefined>"
+      },
+      "sandbox.fledgeEnabled.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": false
+        }
+      },
+      "sandbox.adMeasurementEnabled.on": {
+        "error": "Extensions aren’t allowed to enable Privacy Sandbox APIs."
+      },
+      "sandbox.adMeasurementEnabled.off": {
+        "ok": "<undefined>"
+      },
+      "sandbox.adMeasurementEnabled.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": false
+        }
+      },
+      "referrers.set": {
+        "ok": "<undefined>"
+      },
+      "referrers.header": {
+        "ok": "none"
+      },
+      "referrers.clear": {
+        "ok": "<undefined>"
+      },
+      "dnt.header.cleared": {
+        "ok": "none"
       }
     },
     "proxy": {
@@ -5303,6 +6058,309 @@
       },
       "get.cleared": {
         "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "noRules.set": {
+        "error": "Proxy mode 'fixed_servers' requires a 'rules' field."
+      },
+      "noRules.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "emptyRules.set": {
+        "error": "Proxy mode 'fixed_servers' requires a 'rules' field."
+      },
+      "emptyRules.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "noSchemeOrPort.set": {
+        "ok": "<undefined>"
+      },
+      "noSchemeOrPort.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "fixed_servers",
+            "rules": {
+              "singleProxy": {
+                "host": "127.0.0.1",
+                "port": 80,
+                "scheme": "http"
+              }
+            }
+          }
+        }
+      },
+      "perScheme.set": {
+        "ok": "<undefined>"
+      },
+      "perScheme.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "fixed_servers",
+            "rules": {
+              "fallbackProxy": {
+                "host": "127.0.0.1",
+                "port": 1080,
+                "scheme": "socks5"
+              },
+              "proxyForFtp": {
+                "host": "127.0.0.1",
+                "port": 9,
+                "scheme": "socks4"
+              },
+              "proxyForHttp": {
+                "host": "127.0.0.1",
+                "port": 9,
+                "scheme": "http"
+              },
+              "proxyForHttps": {
+                "host": "127.0.0.1",
+                "port": 443,
+                "scheme": "https"
+              }
+            }
+          }
+        }
+      },
+      "quic.set": {
+        "ok": "<undefined>"
+      },
+      "quic.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "fixed_servers",
+            "rules": {
+              "singleProxy": {
+                "host": "127.0.0.1",
+                "port": 9,
+                "scheme": "http"
+              }
+            }
+          }
+        }
+      },
+      "ipv6.set": {
+        "ok": "<undefined>"
+      },
+      "ipv6.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "fixed_servers",
+            "rules": {
+              "singleProxy": {
+                "host": "::1",
+                "port": 9,
+                "scheme": "http"
+              }
+            }
+          }
+        }
+      },
+      "singleAndPerScheme.set": {
+        "error": "Proxy rule for singleProxy and proxyForHttps cannot be set at the same time."
+      },
+      "singleAndPerScheme.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "emptyHost.set": {
+        "error": "Invalid 'rules.???.host' entry. Hostname cannot be empty."
+      },
+      "emptyHost.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "unicodeHost.set": {
+        "error": "Invalid 'rules.???.host' entry 'ä.example'. 'host' field supports only ASCII URLs (encode URLs in Punycode format)."
+      },
+      "unicodeHost.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "stringPort.set": {
+        "error": "Invalid invocation"
+      },
+      "stringPort.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "badScheme.set": {
+        "error": "Invalid invocation"
+      },
+      "badScheme.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "bypassNotArray.set": {
+        "error": "Invalid invocation"
+      },
+      "bypassNotArray.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "pacData.set": {
+        "ok": "<undefined>"
+      },
+      "pacData.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "pac_script",
+            "pacScript": {
+              "data": "function FindProxyForURL(u, h) { return \"DIRECT\" }",
+              "mandatory": false
+            }
+          }
+        }
+      },
+      "pacUrl.set": {
+        "ok": "<undefined>"
+      },
+      "pacUrl.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "pac_script",
+            "pacScript": {
+              "mandatory": true,
+              "url": "http://127.0.0.1:1/p.pac"
+            }
+          }
+        }
+      },
+      "pacBoth.set": {
+        "ok": "<undefined>"
+      },
+      "pacBoth.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "pac_script",
+            "pacScript": {
+              "mandatory": false,
+              "url": "http://127.0.0.1:1/p.pac"
+            }
+          }
+        }
+      },
+      "pacNone.set": {
+        "error": "Proxy mode 'pac_script' requires a 'pacScript' field with either a 'url' field or a 'data' field."
+      },
+      "pacNone.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "pacEmpty.set": {
+        "error": "Proxy mode 'pac_script' requires a 'pacScript' field with either a 'url' field or a 'data' field."
+      },
+      "pacEmpty.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "directWithRules.set": {
+        "ok": "<undefined>"
+      },
+      "directWithRules.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "direct"
+          }
+        }
+      },
+      "autoDetect.set": {
+        "ok": "<undefined>"
+      },
+      "autoDetect.get": {
+        "ok": {
+          "levelOfControl": "controlled_by_this_extension",
+          "value": {
+            "mode": "auto_detect"
+          }
+        }
+      },
+      "noMode.set": {
+        "error": "Invalid invocation"
+      },
+      "noMode.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "extraProp.set": {
+        "error": "Invalid invocation"
+      },
+      "extraProp.get": {
+        "ok": {
+          "levelOfControl": "controllable_by_this_extension",
+          "value": {
+            "mode": "system"
+          }
+        }
+      },
+      "set.noValue": {
+        "error": "Invalid invocation"
+      },
+      "set.incognito": {
+        "error": "You do not have permission to access incognito preferences."
+      },
+      "get.incognito": {
+        "error": "You do not have permission to access incognito preferences."
+      },
+      "onChange.clear": {
+        "event": {
           "levelOfControl": "controllable_by_this_extension",
           "value": {
             "mode": "system"
