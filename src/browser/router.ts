@@ -243,6 +243,7 @@ class RoutingDelegate {
         : {
             type: event.type,
             extensionId,
+            worker: (event as Electron.IpcMainServiceWorkerEvent).serviceWorker,
           }
     return observer?.addListener(listener, extensionId, eventName, eventSenderUrl(event))
   }
@@ -312,7 +313,12 @@ type EventName = string
 type HandlerMap = Map<EventName, Handler>
 
 type FrameEventListener = { type: 'frame'; host: Electron.WebContents; extensionId: string }
-type SWEventListener = { type: 'service-worker'; extensionId: string }
+type SWEventListener = {
+  type: 'service-worker'
+  extensionId: string
+  /** The worker that added the listener, known only while it is being added. */
+  worker?: Electron.ServiceWorkerMain
+}
 type EventListener = FrameEventListener | SWEventListener
 
 const getHostId = (host: FrameEventListener['host']) => host.id
@@ -461,7 +467,12 @@ export class ExtensionRouter {
       d(`ignoring existing '${eventName}' event listener for ${extensionId}`)
     } else {
       d(`adding '${eventName}' event listener for ${extensionId}`)
-      eventListeners.push(listener)
+      // A stored listener outlives its worker, so it keeps no handle to one.
+      eventListeners.push(
+        listener.type === 'service-worker'
+          ? { type: listener.type, extensionId: listener.extensionId }
+          : listener,
+      )
       if (listener.type === 'frame' && listener.host) {
         this.observeListenerHost(listener.host)
       }
@@ -476,11 +487,54 @@ export class ExtensionRouter {
     if (waiting) {
       this.waiting.delete(key)
       const now = Date.now()
-      for (const entry of waiting) {
-        if (entry.expires < now) continue
-        this.deliverToServiceWorkerOrHost(listener, extensionId, `crx-${eventName}`, entry.args, 0)
+      const live = waiting.filter((entry) => entry.expires >= now)
+      // The worker that just added the listener may still be running its
+      // first script, when it can neither be started by scope nor take a
+      // message yet: the event goes to that worker as soon as it runs.
+      const worker = listener.type === 'service-worker' ? listener.worker : undefined
+      if (worker) {
+        this.whenWorkerRuns(worker, () => {
+          for (const entry of live) {
+            try {
+              if ((worker as any).isDestroyed?.()) throw new Error('worker is gone')
+              worker.send(`crx-${eventName}`, ...entry.args)
+            } catch (err) {
+              d('send %s to the worker that listens failed: %o', eventName, err)
+              this.deliverToServiceWorkerOrHost(listener, extensionId, `crx-${eventName}`, entry.args, 0)
+            }
+          }
+        })
+      } else {
+        for (const entry of live) {
+          this.deliverToServiceWorkerOrHost(listener, extensionId, `crx-${eventName}`, entry.args, 0)
+        }
       }
     }
+  }
+
+  /** Calls `fn` once the worker runs: now, or when it says it does (5 s at most). */
+  private whenWorkerRuns(worker: Electron.ServiceWorkerMain, fn: () => void) {
+    const versionId = (worker as any).versionId
+    const serviceWorkers = this.session.serviceWorkers as any
+    const running =
+      typeof serviceWorkers.getAllRunning === 'function' ? serviceWorkers.getAllRunning() : {}
+    if (running && versionId in running) {
+      fn()
+      return
+    }
+    let done = false
+    const finish = () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      serviceWorkers.off('running-status-changed', onStatus)
+      fn()
+    }
+    const onStatus = (details: any) => {
+      if (details?.versionId === versionId && details.runningStatus === 'running') finish()
+    }
+    const timer = setTimeout(finish, 5000)
+    serviceWorkers.on('running-status-changed', onStatus)
   }
 
   /** Whether the extension has a listener for the event now, in any of its contexts. */

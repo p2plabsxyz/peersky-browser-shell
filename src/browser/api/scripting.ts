@@ -232,10 +232,11 @@ export class ScriptingAPI {
   // ------------------------------------------------------------ executeScript
 
   private executeScript = async (
-    { extension }: ExtensionEvent,
+    event: ExtensionEvent,
     injection: any,
     opts?: { fallback?: boolean },
   ) => {
+    const { extension } = event
     if (!isPlainObject(injection)) throw new Error("Error at parameter 'injection': Invalid type: expected object.")
     const tab = this.getTab(injection.target)
     const fallback = opts?.fallback === true
@@ -244,7 +245,10 @@ export class ScriptingAPI {
     if (!fallback) {
       return { mode: 'electron', target: electronTarget, documentIds: this.documentIds(tab.id, frames) }
     }
-    return { mode: 'done', result: await this.runScript(extension, tab, frames, injection) }
+    // The page gets a user gesture only if the call came during one, as in
+    // Chrome; otherwise a script could open popups or go fullscreen at will.
+    const gesture = !!event.gesture || this.ctx.store.hasUserGesture(extension.id)
+    return { mode: 'done', result: await this.runScript(extension, tab, frames, injection, gesture) }
   }
 
   private async readFiles(extension: Electron.Extension, files: unknown): Promise<string[]> {
@@ -273,6 +277,7 @@ export class ScriptingAPI {
     tab: Electron.WebContents,
     frames: Electron.WebFrameMain[],
     injection: any,
+    gesture = false,
   ) {
     const hasFunc = typeof injection.func === 'string' && injection.func.trim() !== ''
     const hasFiles = injection.files !== undefined
@@ -304,9 +309,9 @@ export class ScriptingAPI {
       try {
         for (const code of sources) {
           if (world === 'MAIN') {
-            result = await frame.executeJavaScript(code, true)
+            result = await frame.executeJavaScript(code, gesture)
           } else if (frame === frame.top) {
-            result = await tab.executeJavaScriptInIsolatedWorld(isolatedWorldId(extension.id), [{ code }], true)
+            result = await tab.executeJavaScriptInIsolatedWorld(isolatedWorldId(extension.id), [{ code }], gesture)
           } else {
             // Electron has no isolated worlds in subframes for the main
             // process; the page's own world would let the page tamper.

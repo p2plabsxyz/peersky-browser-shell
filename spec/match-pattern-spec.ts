@@ -60,6 +60,14 @@ describe('match patterns', () => {
     expect(matchesPattern('not a pattern', 'https://example.com/')).to.equal(false)
   })
 
+  it('matches a pattern full of stars quickly', () => {
+    // As a regular expression this backtracked for seconds.
+    const pattern = 'https://example.com/' + '*a'.repeat(12) + '*b'
+    const started = Date.now()
+    expect(matchesPattern(pattern, 'https://example.com/' + 'a'.repeat(4000))).to.equal(false)
+    expect(Date.now() - started).to.be.below(500)
+  })
+
   it('knows when one pattern covers another', () => {
     expect(patternCovers('<all_urls>', 'https://a.example/*')).to.equal(true)
     expect(patternCovers('*://*.example.com/*', 'https://a.example.com/x/*')).to.equal(true)

@@ -19,29 +19,65 @@ export interface ParsedMatchPattern {
   matchSubdomains: boolean
   /** undefined: any port. */
   port?: string
-  path: RegExp
+  path: GlobMatcher
   source: string
 }
 
 const SCHEMES = new Set(['http', 'https', 'ws', 'wss', 'file', 'ftp', 'urn', 'chrome-extension'])
 const WILDCARD_SCHEMES = new Set(['http', 'https', 'ws', 'wss'])
 
-const escapeRegExp = (s: string) => s.replace(/[\\^$+?.()|[\]{}]/g, '\\$&')
+/** Something that tests text, like a RegExp. */
+export interface GlobMatcher {
+  test(text: string): boolean
+}
 
-const globToRegExp = (glob: string) =>
-  new RegExp(`^${glob.split('*').map(escapeRegExp).join('.*')}$`, 's')
+/**
+ * Whether `text` matches `glob`, where `*` is any run of characters and
+ * nothing else is special. It never backtracks more than one star at a time,
+ * so an extension's pattern full of stars cannot stall the main process the
+ * way a regular expression built from it could.
+ */
+export function globMatch(glob: string, text: string): boolean {
+  let g = 0
+  let t = 0
+  let star = -1
+  let mark = 0
+  while (t < text.length) {
+    if (g < glob.length && glob[g] === '*') {
+      star = g++
+      mark = t
+    } else if (g < glob.length && glob[g] === text[t]) {
+      g++
+      t++
+    } else if (star !== -1) {
+      g = star + 1
+      t = ++mark
+    } else {
+      return false
+    }
+  }
+  while (g < glob.length && glob[g] === '*') g++
+  return g === glob.length
+}
+
+const MAX_GLOB_LENGTH = 4096
+
+const globMatcher = (glob: string): GlobMatcher => {
+  if (glob.length > MAX_GLOB_LENGTH) throw new Error('Pattern is too long.')
+  return { test: (text: string) => globMatch(glob, text) }
+}
 
 /** Parses a pattern, or throws with Chrome's wording for what is wrong with it. */
 export function parseMatchPattern(pattern: string): ParsedMatchPattern {
   if (typeof pattern !== 'string') throw new Error('Invalid match pattern.')
   if (pattern === '<all_urls>') {
-    return { allUrls: true, scheme: '*', host: '*', matchSubdomains: true, path: /.*/s, source: pattern }
+    return { allUrls: true, scheme: '*', host: '*', matchSubdomains: true, path: { test: () => true }, source: pattern }
   }
   const separator = pattern.indexOf('://')
   if (separator < 0) {
     // urn: and data: style patterns have no '//'.
     if (/^urn:/.test(pattern)) {
-      return { allUrls: false, scheme: 'urn', host: '', matchSubdomains: false, path: globToRegExp(pattern.slice(4)), source: pattern }
+      return { allUrls: false, scheme: 'urn', host: '', matchSubdomains: false, path: globMatcher(pattern.slice(4)), source: pattern }
     }
     throw new Error('Missing scheme separator.')
   }
@@ -51,7 +87,7 @@ export function parseMatchPattern(pattern: string): ParsedMatchPattern {
   const slash = rest.indexOf('/')
   if (scheme === 'file') {
     if (slash < 0) throw new Error('Missing path.')
-    return { allUrls: false, scheme, host: '', matchSubdomains: false, path: globToRegExp(rest.slice(slash)), source: pattern }
+    return { allUrls: false, scheme, host: '', matchSubdomains: false, path: globMatcher(rest.slice(slash)), source: pattern }
   }
   if (slash < 0) throw new Error('Missing path.')
   let hostPort = rest.slice(0, slash)
@@ -75,7 +111,7 @@ export function parseMatchPattern(pattern: string): ParsedMatchPattern {
     host = host.slice(2)
   }
   if (host !== '*' && host.includes('*')) throw new Error('Invalid host wildcard.')
-  return { allUrls: false, scheme, host, matchSubdomains, port, path: globToRegExp(path), source: pattern }
+  return { allUrls: false, scheme, host, matchSubdomains, port, path: globMatcher(path), source: pattern }
 }
 
 /** Parses, returning undefined for an invalid pattern. */
@@ -151,10 +187,10 @@ export function patternCovers(outer: string, inner: string): boolean {
   if (a.port !== undefined && a.port !== b.port) return false
   const aPath = a.source.slice(a.source.indexOf('/', a.source.indexOf('://') + 3))
   const bPath = b.source.slice(b.source.indexOf('/', b.source.indexOf('://') + 3))
-  return aPath === '/*' || aPath === bPath || globToRegExp(aPath).test(bPath)
+  return aPath === '/*' || aPath === bPath || globMatch(aPath, bPath)
 }
 
 /** Glob match for titles in tabs.query({ title }). */
 export function matchesGlob(glob: string, text: string): boolean {
-  return globToRegExp(glob).test(text)
+  return globMatch(glob, text)
 }

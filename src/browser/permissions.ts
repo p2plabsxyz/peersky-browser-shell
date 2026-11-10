@@ -180,7 +180,7 @@ export class ExtensionPermissions {
     }
     if (typeof opts.tabId === 'number') {
       const origin = this.activeTabs.get(extension.id)?.get(opts.tabId)
-      if (origin && origin === parsed.origin) return true
+      if (origin && origin !== 'null' && origin === parsed.origin) return true
     }
     return false
   }
@@ -194,6 +194,9 @@ export class ExtensionPermissions {
     } catch {
       return
     }
+    // about:blank, data: and browser pages have an opaque origin ('null'),
+    // which every other such page shares: nothing to grant there.
+    if (origin === 'null') return
     let tabs = this.activeTabs.get(extension.id)
     if (!tabs) this.activeTabs.set(extension.id, (tabs = new Map()))
     tabs.set(tabId, origin)
