@@ -1716,6 +1716,8 @@ export const injectExtensionAPIs = () => {
             getAll: invokeExtension('permissions.getAll'),
             remove: invokeExtension('permissions.remove'),
             request: invokeExtension('permissions.request'),
+            addHostAccessRequest: invokeExtension('permissions.addHostAccessRequest'),
+            removeHostAccessRequest: invokeExtension('permissions.removeHostAccessRequest'),
             onAdded: new ExtensionEvent('permissions.onAdded'),
             onRemoved: new ExtensionEvent('permissions.onRemoved'),
           }
@@ -1896,7 +1898,12 @@ export const injectExtensionAPIs = () => {
               } catch (_) { /* skip inaccessible */ }
             }
           }
-          patched.connectNative = (application: string) => {
+          // Native messaging only with its permission, as in Chrome.
+          if (!declared.has('nativeMessaging')) {
+            delete patched.connectNative
+            delete patched.sendNativeMessage
+          }
+          if (declared.has('nativeMessaging')) patched.connectNative = (application: string) => {
             const port = new NativePort()
             const receive = port._receive.bind(port)
             const disconnect = port._disconnect.bind(port)
@@ -1908,12 +1915,16 @@ export const injectExtensionAPIs = () => {
           }
           patched.getContexts = invokeExtension('runtime.getContexts')
           patched.openOptionsPage = invokeExtension('runtime.openOptionsPage')
-          patched.sendNativeMessage = invokeExtension('runtime.sendNativeMessage')
+          if (declared.has('nativeMessaging')) {
+            patched.sendNativeMessage = invokeExtension('runtime.sendNativeMessage')
+          }
           patched.requestUpdateCheck = invokeExtension('runtime.requestUpdateCheck')
           // Electron never fires these. The main process does, once the
           // extension has added its listener.
           patched.onInstalled = new ExtensionEvent('runtime.onInstalled')
           patched.onStartup = new ExtensionEvent('runtime.onStartup')
+          patched.onExtensionLoaded = new ExtensionEvent('runtime.onExtensionLoaded')
+          patched.onEnabled = new ExtensionEvent('runtime.onEnabled')
           return patched
         },
       },
@@ -2545,6 +2556,51 @@ export const injectExtensionAPIs = () => {
             delete browserAlias[root]
           }
         } catch (_) {}
+      }
+    }
+
+    // Chrome's old page timing functions, which some code checks for to tell
+    // it runs in Chrome. Electron leaves them out. A worker has no navigation,
+    // so its times are those of its start.
+    const navigationEntry = (): any => {
+      try {
+        return (performance.getEntriesByType?.('navigation') || [])[0]
+      } catch {
+        return undefined
+      }
+    }
+    const epochSeconds = (ms?: number) =>
+      typeof ms === 'number' && ms > 0 ? (performance.timeOrigin + ms) / 1000 : 0
+    if (typeof chrome.loadTimes !== 'function') {
+      chrome.loadTimes = function loadTimes() {
+        const nav = navigationEntry()
+        return {
+          requestTime: epochSeconds(nav?.requestStart) || performance.timeOrigin / 1000,
+          startLoadTime: performance.timeOrigin / 1000,
+          commitLoadTime: epochSeconds(nav?.responseStart),
+          finishDocumentLoadTime: epochSeconds(nav?.domContentLoadedEventEnd),
+          finishLoadTime: epochSeconds(nav?.loadEventEnd),
+          firstPaintTime: 0,
+          firstPaintAfterLoadTime: 0,
+          navigationType:
+            nav?.type === 'reload' ? 'Reload' : nav?.type === 'back_forward' ? 'BackForward' : 'Other',
+          wasFetchedViaSpdy: nav?.nextHopProtocol === 'h2',
+          wasNpnNegotiated: !!nav?.nextHopProtocol && nav.nextHopProtocol !== 'http/1.1',
+          npnNegotiatedProtocol: nav?.nextHopProtocol || 'unknown',
+          wasAlternateProtocolAvailable: false,
+          connectionInfo: nav?.nextHopProtocol || 'unknown',
+        }
+      }
+    }
+    if (typeof chrome.csi !== 'function') {
+      chrome.csi = function csi() {
+        const nav = navigationEntry()
+        return {
+          startE: Math.round(performance.timeOrigin),
+          onloadT: nav?.loadEventEnd ? Math.round(performance.timeOrigin + nav.loadEventEnd) : 0,
+          pageT: performance.now(),
+          tran: 15,
+        }
       }
     }
 

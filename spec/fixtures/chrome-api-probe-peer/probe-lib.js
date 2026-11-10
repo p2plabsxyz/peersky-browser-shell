@@ -36,6 +36,9 @@
           const before = Object.keys(out).length
           if (depth < depthLimit) walk(v, path + '.', depth + 1)
           if (Object.keys(out).length === before) out[path] = 'object'
+        } else if (k === 'dynamicId') {
+          // A new UUID every time the extension loads: only its type compares.
+          out[path] = typeof v
         } else if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
           out[path] = typeof v + ':' + v
         } else {

@@ -401,6 +401,8 @@ export class ManagementAPI {
       return
     }
 
+    // runtime tells the extension it was enabled, once it loads again.
+    this.ctx.store.emit('extension-enabling', id)
     if (typeof hook === 'function') await hook({ id, path: extension.path, enabled: true })
     else if (!sessionExtensions.getExtension(id)) await sessionExtensions.loadExtension(extension.path)
     this.disabled.delete(id)

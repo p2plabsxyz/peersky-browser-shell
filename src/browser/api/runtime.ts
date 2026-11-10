@@ -29,6 +29,7 @@ export class RuntimeAPI extends EventEmitter {
     handle('runtime.openOptionsPage', this.openOptionsPage)
     handle('runtime.sendNativeMessage', this.sendNativeMessage, { permission: 'nativeMessaging' })
     handle('runtime.requestUpdateCheck', this.requestUpdateCheck)
+    this.ctx.store.on('extension-enabling', (id: string) => this.enabling.add(id))
     handle('extension.setUpdateUrlData', this.setUpdateUrlData)
     handle('extension.getViews', this.getViews)
     handle('extension.isAllowedFileSchemeAccess', this.isAllowedFileSchemeAccess)
@@ -154,16 +155,32 @@ export class RuntimeAPI extends EventEmitter {
       stateStore.setNamespace(INSTALLED_STATE_NS, { ...seen, [extension.id]: { version, browser } })
       await stateStore.flush().catch(() => {})
     }
+    const enabled = this.enabling.delete(extension.id)
     if (details) {
       router.sendEventWhenListening(extension.id, 'runtime.onInstalled', [details])
       if (details.reason === 'install') this.ctx.store.emit('extension-installed', extension)
     } else if (!this.startedThisRun.has(extension.id)) {
       router.sendEventWhenListening(extension.id, 'runtime.onStartup', [])
     }
+
+    // runtime.onExtensionLoaded (Chrome 157) on every load, with its reason;
+    // runtime.onEnabled (Chrome 155) when it comes back from disabled.
+    let loaded: { reason: string; previousVersion?: string }
+    if (details?.reason === 'install') loaded = { reason: 'install' }
+    else if (details?.reason === 'update') loaded = { reason: 'update', previousVersion: details.previousVersion }
+    else if (details?.reason === 'chrome_update') loaded = { reason: 'browser_update' }
+    // Chrome's docs give the current version as previousVersion for 'enable'.
+    else if (enabled) loaded = { reason: 'enable', previousVersion: version }
+    else if (!this.startedThisRun.has(extension.id)) loaded = { reason: 'startup' }
+    else loaded = { reason: 'reload' }
+    router.sendEventWhenListening(extension.id, 'runtime.onExtensionLoaded', [loaded])
+    if (enabled) router.sendEventWhenListening(extension.id, 'runtime.onEnabled', [])
     this.startedThisRun.add(extension.id)
   }
 
   private startedThisRun = new Set<string>()
+  /** Extensions chrome.management is turning back on. */
+  private enabling = new Set<string>()
   private firstTracked?: boolean
 
   private async hasStoredData(extensionId: string) {

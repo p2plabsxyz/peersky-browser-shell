@@ -1,28 +1,12 @@
 {
   "differences": [
     {
-      "path": "probe.contentSettings.javascript.enforced.*",
-      "reason": "With JavaScript blocked the page runs no script in Chrome or the shell, but Electron fails the extension's MAIN world script (\"Script not run\") where Chrome returns a null result."
-    },
-    {
       "path": "probe.userScripts.*",
       "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
     },
     {
       "path": "probe.extension.isAllowedFileSchemeAccess.ok",
       "reason": "Electron gives an extension file access only when the host loads it with allowFileAccess, which the shell cannot read back, so it answers false unless the host's isFileSchemeAccessAllowed hook says yes, where Chrome lets an unpacked extension read files."
-    },
-    {
-      "path": "probe.offscreen.message.ok.namespaces.0",
-      "reason": "Electron has no chrome.csi or chrome.loadTimes, Chrome's old page timing functions, so an offscreen document lists only runtime."
-    },
-    {
-      "path": "probe.offscreen.message.ok.namespaces.1",
-      "reason": "Electron has no chrome.csi or chrome.loadTimes, Chrome's old page timing functions, so an offscreen document lists only runtime."
-    },
-    {
-      "path": "probe.offscreen.message.ok.namespaces.2",
-      "reason": "Electron has no chrome.csi or chrome.loadTimes, Chrome's old page timing functions, so an offscreen document lists only runtime."
     },
     {
       "path": "probe.contentScript.recorded.openOrClosedShadowRoot",
@@ -65,24 +49,60 @@
       "reason": "Follows from probe.tabs.goBack: the shell went back, so there is a page to go forward to."
     },
     {
-      "path": "probe.surface.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (216 differences)."
+      "path": "probe.surface.chrome.dom.openOrClosedShadowRoot",
+      "reason": "Chrome's chrome.dom.openOrClosedShadowRoot reaches a closed shadow root, which Electron gives script no way to do, so the shell leaves the function out rather than give a wrong answer."
     },
     {
-      "path": "probe.permissions.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
+      "path": "peer.surface.chrome.dom.openOrClosedShadowRoot",
+      "reason": "Chrome's chrome.dom.openOrClosedShadowRoot reaches a closed shadow root, which Electron gives script no way to do, so the shell leaves the function out rather than give a wrong answer."
     },
     {
-      "path": "peer.surface.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (22 differences)."
+      "path": "pages.probe.dom.openOrClosedShadowRoot",
+      "reason": "Chrome's chrome.dom.openOrClosedShadowRoot reaches a closed shadow root, which Electron gives script no way to do, so the shell leaves the function out rather than give a wrong answer."
     },
     {
-      "path": "pages.probe.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (218 differences)."
+      "path": "pages.peer.dom.openOrClosedShadowRoot",
+      "reason": "Chrome's chrome.dom.openOrClosedShadowRoot reaches a closed shadow root, which Electron gives script no way to do, so the shell leaves the function out rather than give a wrong answer."
     },
     {
-      "path": "pages.peer.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (23 differences)."
+      "path": "probe.surface.chrome.tabs.createSplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "probe.surface.chrome.tabs.unsplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "peer.surface.chrome.tabs.createSplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "peer.surface.chrome.tabs.unsplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "pages.probe.tabs.createSplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "pages.probe.tabs.unsplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "pages.peer.tabs.createSplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "pages.peer.tabs.unsplit",
+      "reason": "PeerSky has no split view, so tabs.createSplit and tabs.unsplit are left out rather than offered and always failing."
+    },
+    {
+      "path": "probe.surface.chrome.userScripts.*",
+      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
+    },
+    {
+      "path": "pages.probe.userScripts.*",
+      "reason": "Chrome shows chrome.userScripts only after the person turns on \"Allow User Scripts\" for the extension; PeerSky has no such switch yet and people rely on user script managers, so it is on unless the host's isUserScriptsAllowed hook says no."
     }
   ]
 }
