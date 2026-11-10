@@ -440,6 +440,99 @@ export const injectExtensionAPIs = () => {
         ...(((manifest as any).optional_permissions as unknown[]) || []),
       ].filter((p): p is string => typeof p === 'string'),
     )
+    // Chrome's argument checks, for the hand-written calls below that check
+    // in the page as Chrome's bindings do: a bad argument throws at once with
+    // Chrome's message. The main process checks every call again.
+    type ArgSpec = {
+      type: string
+      min?: number
+      max?: number
+      enum?: string[]
+      items?: ArgSpec
+      choices?: ArgSpec[]
+      props?: Record<string, ArgSpec>
+      required?: string[]
+    }
+    const typeOfArg = (v: unknown) =>
+      v === null
+        ? 'null'
+        : Array.isArray(v)
+          ? 'array'
+          : typeof v === 'number'
+            ? Number.isInteger(v)
+              ? 'integer'
+              : 'number'
+            : typeof v
+    const checkArg = (spec: ArgSpec, value: any): string | undefined => {
+      if (spec.choices) {
+        if (spec.choices.some((choice) => !checkArg(choice, value))) return undefined
+        return `Invalid type: expected [${spec.choices.map((c) => c.type).join('|')}], found ${typeOfArg(value)}.`
+      }
+      if (spec.type === 'any') return undefined
+      const found = typeOfArg(value)
+      if (found !== spec.type && !(spec.type === 'number' && found === 'integer')) {
+        return `Invalid type: expected ${spec.type}, found ${found}.`
+      }
+      if (spec.enum && !spec.enum.includes(value)) return `Value must be one of ${[...spec.enum].sort().join(', ')}.`
+      if (spec.min !== undefined && value < spec.min) return `Value must be at least ${spec.min}.`
+      if (spec.max !== undefined && value > spec.max) return `Value must be at most ${spec.max}.`
+      if (spec.items) {
+        for (let i = 0; i < value.length; i++) {
+          const error = checkArg(spec.items, value[i])
+          if (error) return `Error at index ${i}: ${error}`
+        }
+      }
+      if (spec.props) {
+        for (const name of Object.keys(spec.props).sort()) {
+          const v = value[name]
+          if (v === undefined || v === null) {
+            if (spec.required?.includes(name)) return `Missing required property '${name}'.`
+            continue
+          }
+          const error = checkArg(spec.props[name], v)
+          if (error) return `Error at property '${name}': ${error}`
+        }
+        for (const name of Object.keys(value)) {
+          if (!(name in spec.props)) return `Unexpected property: '${name}'.`
+        }
+      }
+      return undefined
+    }
+    const invocationError = (signature: string, detail: string) =>
+      new TypeError(`Error in invocation of ${signature}: ${detail}`)
+    /** Throws as Chrome does for an argument `name` of `signature` that does not fit `spec`. */
+    const checkParam = (signature: string, name: string, spec: ArgSpec, value: unknown) => {
+      const error = checkArg(spec, value)
+      if (error) {
+        throw invocationError(signature, error.startsWith('Invalid type') ? 'No matching signature.' : `Error at parameter '${name}': ${error}`)
+      }
+    }
+    const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e))
+    /** Calls back as Chrome does: chrome.runtime.lastError is set while the callback runs after a failure. */
+    const callBack = (callback: Function, error: unknown, args: any[]) => {
+      const rt = chrome.runtime
+      if (error && rt) {
+        try {
+          Object.defineProperty(rt, 'lastError', {
+            value: { message: errorText(error) },
+            configurable: true,
+            enumerable: true,
+            writable: true,
+          })
+        } catch {}
+      }
+      try {
+        callback(...args)
+      } finally {
+        if (error && rt) {
+          try {
+            delete rt.lastError
+          } catch {}
+        }
+      }
+    }
+    const strings: ArgSpec = { type: 'array', items: { type: 'string' } }
+
     const apiDefinitions: any = {
       action: {
         shouldInject: () => manifest.manifest_version === 3 && !!manifest.action,
@@ -507,6 +600,539 @@ export const injectExtensionAPIs = () => {
             sendCommand: invokeExtension('debugger.sendCommand'),
             onDetach: new ExtensionEvent('debugger.onDetach'),
             onEvent: new ExtensionEvent('debugger.onEvent'),
+          }
+        },
+      },
+
+      // chrome.tts: speak's onEvent option stays in this context; the main
+      // process tags the utterance's events with a srcId and they come back
+      // through tts.onEvent, as Chrome's bindings do it.
+      tts: {
+        permission: 'tts',
+        factory: (base: any) => {
+          const signature =
+            'tts.speak(string utterance, optional tts.TtsOptions options, optional function callback)'
+          const optionsSpec: ArgSpec = {
+            type: 'object',
+            props: {
+              desiredEventTypes: strings,
+              enqueue: { type: 'boolean' },
+              extensionId: { type: 'string' },
+              gender: { type: 'string', enum: ['male', 'female'] },
+              lang: { type: 'string' },
+              onEvent: { type: 'function' },
+              pitch: { type: 'number', min: 0, max: 2 },
+              rate: { type: 'number', max: 10 },
+              requiredEventTypes: strings,
+              voiceName: { type: 'string' },
+              volume: { type: 'number', min: 0, max: 1 },
+            },
+          }
+          const onEvent = new ExtensionEvent('tts.onEvent')
+          const handlers = new Map<number, Function>()
+          let listening = false
+          // Unique across this extension's pages and worker, which all hear
+          // every tts.onEvent.
+          let nextSrcId = 1 + Math.floor(Math.random() * 0x3fffffff)
+          const dispatch = (event: any) => {
+            const handler = event && handlers.get(event.srcId)
+            if (!handler) return
+            if (event.isFinalEvent) handlers.delete(event.srcId)
+            handler({
+              type: event.type,
+              charIndex: event.charIndex,
+              length: event.length,
+              errorMessage: event.errorMessage,
+            })
+          }
+          // Calls that answer nothing call back with no arguments, as in Chrome.
+          const noResult = (name: string) => {
+            const call = invokeExtension(name)
+            return (...args: any[]) => {
+              const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+              const result = (call(...args) as Promise<unknown>).then(() => undefined)
+              if (!callback) return result
+              result.then(
+                () => callBack(callback, null, []),
+                (error) => callBack(callback, error, []),
+              )
+            }
+          }
+          const speak = noResult('tts.speak')
+          return {
+            ...base,
+            getVoices: invokeExtension('tts.getVoices'),
+            isSpeaking: invokeExtension('tts.isSpeaking'),
+            pause: noResult('tts.pause'),
+            resume: noResult('tts.resume'),
+            stop: noResult('tts.stop'),
+            speak(utterance: unknown, options?: any, callback?: unknown) {
+              if (typeof options === 'function' && callback === undefined) {
+                callback = options
+                options = undefined
+              }
+              if (typeof utterance !== 'string' || (callback !== undefined && typeof callback !== 'function')) {
+                throw invocationError(signature, 'No matching signature.')
+              }
+              let sent: any
+              if (options != null) {
+                checkParam(signature, 'options', optionsSpec, options)
+                sent = { ...options }
+                if (typeof sent.onEvent === 'function') {
+                  const srcId = nextSrcId++
+                  handlers.set(srcId, sent.onEvent)
+                  if (!listening) {
+                    listening = true
+                    onEvent.addListener(dispatch)
+                  }
+                  sent.srcId = srcId
+                }
+                delete sent.onEvent
+              }
+              return callback ? speak(utterance, sent, callback) : speak(utterance, sent)
+            },
+            onEvent,
+            onVoicesChanged: new ExtensionEvent('tts.onVoicesChanged'),
+          }
+        },
+      },
+
+      // chrome.pageCapture: the main process sends the page's MHTML bytes,
+      // which reach the extension as a Blob, as in Chrome.
+      pageCapture: {
+        permission: 'pageCapture',
+        factory: (base: any) => {
+          const signature = 'pageCapture.saveAsMHTML(object details, optional function callback)'
+          const detailsSpec: ArgSpec = { type: 'object', props: { tabId: { type: 'integer' } }, required: ['tabId'] }
+          const save = invokeExtension('pageCapture.saveAsMHTML')
+          return {
+            ...base,
+            saveAsMHTML(details: any, callback?: unknown) {
+              if (callback !== undefined && typeof callback !== 'function') {
+                throw invocationError(signature, 'No matching signature.')
+              }
+              checkParam(signature, 'details', detailsSpec, details)
+              const result = (save({ tabId: details.tabId }) as Promise<any>).then((bytes) => new Blob([bytes]))
+              if (!callback) return result
+              result.then(
+                (blob) => callBack(callback as Function, null, [blob]),
+                (error) => callBack(callback as Function, error, [undefined]),
+              )
+            },
+          }
+        },
+      },
+
+      // chrome.tabCapture: getMediaStreamId gives an id for getUserMedia;
+      // capture(), in extension pages only, opens the stream itself.
+      tabCapture: {
+        permission: 'tabCapture',
+        factory: (base: any) => {
+          const idSignature =
+            'tabCapture.getMediaStreamId(optional tabCapture.GetMediaStreamOptions options, optional function callback)'
+          const captureSignature = 'tabCapture.capture(tabCapture.CaptureOptions options, function callback)'
+          const constraintsSpec: ArgSpec = {
+            type: 'object',
+            props: { mandatory: { type: 'object' }, optional: { type: 'object' } },
+          }
+          const getId = invokeExtension('tabCapture.getMediaStreamId')
+          const api: any = {
+            ...base,
+            getMediaStreamId(options?: any, callback?: unknown) {
+              if (typeof options === 'function' && callback === undefined) {
+                callback = options
+                options = undefined
+              }
+              if (callback !== undefined && typeof callback !== 'function') {
+                throw invocationError(idSignature, 'No matching signature.')
+              }
+              if (options != null) {
+                checkParam(idSignature, 'options', {
+                  type: 'object',
+                  props: { consumerTabId: { type: 'integer' }, targetTabId: { type: 'integer' } },
+                }, options)
+              }
+              const args = options == null ? [] : [{ targetTabId: options.targetTabId, consumerTabId: options.consumerTabId }]
+              return callback ? getId(...args, callback) : getId(...args)
+            },
+            getCapturedTabs: invokeExtension('tabCapture.getCapturedTabs'),
+            onStatusChanged: new ExtensionEvent('tabCapture.onStatusChanged'),
+          }
+          if (contextKind === 'page') {
+            const startCapture = invokeExtension('tabCapture.capture')
+            api.capture = (options: any, callback: unknown) => {
+              if (typeof callback !== 'function') throw invocationError(captureSignature, 'No matching signature.')
+              checkParam(captureSignature, 'options', {
+                type: 'object',
+                props: {
+                  audio: { type: 'boolean' },
+                  audioConstraints: constraintsSpec,
+                  presentationId: { type: 'string' },
+                  video: { type: 'boolean' },
+                  videoConstraints: constraintsSpec,
+                },
+              }, options)
+              const constraint = (wanted: boolean, extra: any, id: string) =>
+                wanted
+                  ? {
+                      mandatory: { ...((extra && extra.mandatory) || {}), chromeMediaSource: 'tab', chromeMediaSourceId: id },
+                      ...(extra && extra.optional ? { optional: extra.optional } : {}),
+                    }
+                  : false
+              ;(startCapture({ audio: options.audio === true, video: options.video === true }) as Promise<string>)
+                .then((id) =>
+                  (globalThis as any).navigator.mediaDevices.getUserMedia({
+                    audio: constraint(options.audio === true, options.audioConstraints, id),
+                    video: constraint(options.video === true, options.videoConstraints, id),
+                  }),
+                )
+                .then(
+                  (stream: any) => callBack(callback, null, [stream]),
+                  (error: unknown) => callBack(callback, error, [null]),
+                )
+            }
+          }
+          return api
+        },
+      },
+
+      // chrome.desktopCapture: chooseDesktopMedia returns its request id at
+      // once and answers through its callback when the person has chosen.
+      desktopCapture: {
+        permission: 'desktopCapture',
+        factory: (base: any) => {
+          const signature =
+            'desktopCapture.chooseDesktopMedia(array sources, optional tabs.Tab targetTab, optional object options, function callback)'
+          const cancelSignature = 'desktopCapture.cancelChooseDesktopMedia(integer desktopMediaRequestId)'
+          const choose = invokeExtension('desktopCapture.chooseDesktopMedia')
+          const cancel = invokeExtension('desktopCapture.cancelChooseDesktopMedia')
+          let nextRequestId = 1 + Math.floor(Math.random() * 0x3fffffff)
+          return {
+            ...base,
+            chooseDesktopMedia(...args: any[]) {
+              const callback = args[args.length - 1]
+              if (typeof callback !== 'function' || args.length < 2 || args.length > 4) {
+                throw invocationError(signature, 'No matching signature.')
+              }
+              const [sources, targetTab, options] = args.slice(0, -1)
+              checkParam(signature, 'sources', {
+                type: 'array',
+                items: { type: 'string', enum: ['screen', 'window', 'tab', 'audio'] },
+              }, sources)
+              if (targetTab != null && typeOfArg(targetTab) !== 'object') {
+                throw invocationError(signature, 'No matching signature.')
+              }
+              if (options != null) {
+                checkParam(signature, 'options', {
+                  type: 'object',
+                  props: {
+                    selfBrowserSurface: { type: 'string', enum: ['exclude', 'include'] },
+                    suppressLocalAudioPlaybackIntended: { type: 'boolean' },
+                    systemAudio: { type: 'string', enum: ['exclude', 'include'] },
+                    windowAudio: { type: 'string', enum: ['exclude', 'system', 'window'] },
+                  },
+                }, options)
+              }
+              const requestId = nextRequestId++
+              const tab = targetTab == null ? undefined : { id: targetTab.id, url: targetTab.url }
+              ;(choose(requestId, [...sources], tab, options == null ? undefined : { ...options }) as Promise<any>).then(
+                (answer) => callBack(callback, null, Array.isArray(answer) ? answer : ['', { canRequestAudioTrack: false }]),
+                (error) => callBack(callback, error, [undefined, undefined]),
+              )
+              return requestId
+            },
+            cancelChooseDesktopMedia(...args: any[]) {
+              if (args.length !== 1 || !Number.isInteger(args[0])) {
+                throw invocationError(cancelSignature, 'No matching signature.')
+              }
+              ;(cancel(args[0]) as Promise<void>).catch(() => {})
+            },
+          }
+        },
+      },
+
+      // chrome.declarativeContent: the rule types are built and checked here,
+      // as Chrome's bindings do, and onPageChanged keeps its rules in the
+      // main process, which matches them against pages.
+      declarativeContent: {
+        permission: 'declarativeContent',
+        factory: () => {
+          const PAGE_STATE_MATCHER = 'declarativeContent.PageStateMatcher'
+          const SHOW_ACTION = 'declarativeContent.ShowAction'
+          const SHOW_PAGE_ACTION = 'declarativeContent.ShowPageAction'
+          const SET_ICON = 'declarativeContent.SetIcon'
+          const REQUEST_CONTENT_SCRIPT = 'declarativeContent.RequestContentScript'
+          const urlFilterProps: Record<string, ArgSpec> = {
+            cidrBlocks: strings,
+            ports: { type: 'array', items: { type: 'any', choices: [{ type: 'integer' }, { type: 'array', items: { type: 'integer' } }] } },
+            schemes: strings,
+          }
+          for (const name of [
+            'hostContains', 'hostEquals', 'hostPrefix', 'hostSuffix', 'pathContains', 'pathEquals', 'pathPrefix',
+            'pathSuffix', 'queryContains', 'queryEquals', 'queryPrefix', 'querySuffix', 'urlContains', 'urlEquals',
+            'urlMatches', 'originAndPathMatches', 'urlPrefix', 'urlSuffix',
+          ]) {
+            urlFilterProps[name] = { type: 'string' }
+          }
+          const specs: Record<string, ArgSpec> = {
+            [PAGE_STATE_MATCHER]: {
+              type: 'object',
+              props: {
+                css: strings,
+                instanceType: { type: 'string' },
+                isBookmarked: { type: 'boolean' },
+                pageUrl: { type: 'object', props: urlFilterProps },
+              },
+            },
+            [SHOW_ACTION]: { type: 'object', props: { instanceType: { type: 'string' } } },
+            [SHOW_PAGE_ACTION]: { type: 'object', props: { instanceType: { type: 'string' } } },
+            [SET_ICON]: { type: 'object', props: { imageData: { type: 'object' }, instanceType: { type: 'string' } } },
+            [REQUEST_CONTENT_SCRIPT]: {
+              type: 'object',
+              props: {
+                allFrames: { type: 'boolean' },
+                css: strings,
+                instanceType: { type: 'string' },
+                js: strings,
+                matchAboutBlank: { type: 'boolean' },
+              },
+            },
+          }
+          const invalid = (detail?: string) => new Error(detail ? `Invalid invocation: ${detail}` : 'Invalid invocation')
+
+          // Chrome takes compound selectors only, such as 'a.b[c]:hover', and
+          // lists of them: no combinators between parts.
+          const isCompoundSelector = (selector: string) => {
+            const parts: string[] = []
+            let depth = 0
+            let quote = ''
+            let part = ''
+            for (const ch of selector) {
+              if (quote) {
+                if (ch === quote) quote = ''
+              } else if (ch === '"' || ch === "'") quote = ch
+              else if (ch === '(' || ch === '[') depth++
+              else if (ch === ')' || ch === ']') depth--
+              else if (ch === ',' && depth === 0) {
+                parts.push(part)
+                part = ''
+                continue
+              }
+              part += ch
+            }
+            if (quote || depth !== 0) return false
+            parts.push(part)
+            const simple = /^(?:\*|-?[_a-zA-Z -￿][-_a-zA-Z0-9 -￿]*)?(?:#-?[_a-zA-Z0-9 -￿-]+|\.-?[_a-zA-Z -￿][-_a-zA-Z0-9 -￿]*|\[[^\]]+\]|::?[-a-zA-Z]+(?:\((?:[^()]|\([^()]*\))*\))?)*$/
+            return parts.every((p) => {
+              const s = p.trim()
+              if (!s || !simple.test(s)) return false
+              const doc = (globalThis as any).document
+              if (doc) {
+                try {
+                  doc.createDocumentFragment().querySelector(s)
+                } catch {
+                  return false
+                }
+              }
+              return true
+            })
+          }
+
+          // Copies the parameters in, as Chrome's constructors do, then checks the result.
+          const setup = (instance: any, parameters: any, instanceType: string) => {
+            if (parameters && typeof parameters === 'object') {
+              for (const key of Object.keys(parameters)) instance[key] = parameters[key]
+            }
+            instance.instanceType = instanceType
+            const error = checkArg(specs[instanceType], instance)
+            if (error) throw invalid(error)
+          }
+
+          function PageStateMatcher(this: any, parameters?: any) {
+            if (!(this instanceof PageStateMatcher)) throw invalid()
+            setup(this, parameters, PAGE_STATE_MATCHER)
+            for (const selector of (this as any).css || []) {
+              if (!isCompoundSelector(selector)) throw invalid(`Invalid CSS selector: ${selector}`)
+            }
+          }
+          function ShowAction(this: any, parameters?: any) {
+            if (!(this instanceof ShowAction)) throw invalid()
+            setup(this, parameters, SHOW_ACTION)
+          }
+          // In Manifest V3 a ShowPageAction is a ShowAction.
+          function ShowPageAction(this: any, parameters?: any) {
+            if (!(this instanceof ShowPageAction)) throw invalid()
+            setup(this, parameters, SHOW_ACTION)
+          }
+          function RequestContentScript(this: any, parameters?: any) {
+            if (!(this instanceof RequestContentScript)) throw invalid()
+            setup(this, parameters, REQUEST_CONTENT_SCRIPT)
+          }
+          const isImageData = (v: any) => typeof ImageData === 'function' && v instanceof ImageData
+          // Chrome keeps each icon as an ArrayBuffer of its pixels from the
+          // start. Here: width and height (32 bits each), then RGBA bytes.
+          const packImage = (image: ImageData) => {
+            const buffer = new ArrayBuffer(8 + image.data.length)
+            const view = new DataView(buffer)
+            view.setUint32(0, image.width, true)
+            view.setUint32(4, image.height, true)
+            new Uint8Array(buffer, 8).set(image.data)
+            return buffer
+          }
+          const badImageData = () =>
+            new Error('The imageData property must contain an ImageData object or dictionary of ImageData objects.')
+          const packIcons = (imageData: any) => {
+            if (isImageData(imageData)) return { [imageData.width]: packImage(imageData) }
+            if (!imageData || typeof imageData !== 'object') throw badImageData()
+            const out: Record<string, ArrayBuffer> = {}
+            for (const [size, image] of Object.entries(imageData)) {
+              if (!isImageData(image)) throw badImageData()
+              out[size] = packImage(image as ImageData)
+            }
+            return out
+          }
+          // Icons from a path load later, as in Chrome: until then the
+          // instance has no instanceType and addRules refuses it.
+          const loadIcon = async (instance: any, path: any) => {
+            const paths: Record<string, string> = typeof path === 'string' ? { 16: path } : path
+            const images: Record<string, ImageData> = {}
+            for (const [size, file] of Object.entries(paths)) {
+              const response = await fetch(new URL(String(file), `chrome-extension://${extensionId}/`).href)
+              const bitmap = await createImageBitmap(await response.blob())
+              const canvas = new OffscreenCanvas(bitmap.width, bitmap.height)
+              const context = canvas.getContext('2d')!
+              context.drawImage(bitmap, 0, 0)
+              images[size] = context.getImageData(0, 0, bitmap.width, bitmap.height)
+            }
+            instance.imageData = packIcons(images)
+            instance.instanceType = SET_ICON
+          }
+          function SetIcon(this: any, parameters?: any) {
+            if (!(this instanceof SetIcon)) throw invalid()
+            if (!('imageData' in parameters) && !('path' in parameters)) {
+              throw new Error('Either the path or imageData property must be specified.')
+            }
+            if ('path' in parameters && !('imageData' in parameters)) {
+              loadIcon(this, parameters.path).catch((error) => console.error('declarativeContent.SetIcon:', error))
+              return
+            }
+            const { imageData, ...rest } = parameters
+            const icons = packIcons(imageData)
+            const self: any = this
+            setup(self, rest, SET_ICON)
+            self.imageData = icons
+          }
+
+          // A rule as the main process takes it: plain data, icons in base64.
+          const toBase64 = (buffer: ArrayBuffer) => {
+            const bytes = new Uint8Array(buffer)
+            let text = ''
+            for (let i = 0; i < bytes.length; i += 0x8000) {
+              text += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
+            }
+            return btoa(text)
+          }
+          const checkRules = (rules: unknown) => {
+            if (!Array.isArray(rules)) throw invalid()
+            for (const rule of rules) {
+              const error = checkArg({
+                type: 'object',
+                props: {
+                  actions: { type: 'array' },
+                  conditions: { type: 'array' },
+                  id: { type: 'string' },
+                  priority: { type: 'integer' },
+                  tags: strings,
+                },
+                required: ['actions', 'conditions'],
+              }, rule)
+              if (error) throw invalid()
+              for (const condition of rule.conditions) {
+                if (condition?.instanceType !== PAGE_STATE_MATCHER || checkArg(specs[PAGE_STATE_MATCHER], condition)) {
+                  throw invalid()
+                }
+              }
+              for (const action of rule.actions) {
+                const spec = action && specs[action.instanceType]
+                if (!spec || action.instanceType === PAGE_STATE_MATCHER || checkArg(spec, action)) throw invalid()
+              }
+            }
+          }
+          const serialize = async (rules: any[]) =>
+            Promise.all(
+              rules.map(async (rule) => ({
+                ...(rule.id !== undefined ? { id: rule.id } : {}),
+                ...(rule.priority !== undefined ? { priority: rule.priority } : {}),
+                ...(rule.tags !== undefined ? { tags: [...rule.tags] } : {}),
+                conditions: rule.conditions.map((c: any) => JSON.parse(JSON.stringify(c))),
+                actions: await Promise.all(
+                  rule.actions.map(async (action: any) => {
+                    if (action.instanceType !== SET_ICON) return JSON.parse(JSON.stringify(action))
+                    const imageData: Record<string, string> = {}
+                    for (const [size, image] of Object.entries(action.imageData || {})) {
+                      // An icon from getRules comes back as the base64 it was sent as.
+                      imageData[size] = image instanceof ArrayBuffer ? toBase64(image) : String(image)
+                    }
+                    return { instanceType: SET_ICON, imageData }
+                  }),
+                ),
+              })),
+            )
+          const checkIds = (ids: unknown) => {
+            if (ids != null && (!Array.isArray(ids) || ids.some((id) => typeof id !== 'string'))) throw invalid()
+          }
+          const addRules = invokeExtension('declarativeContent.addRules')
+          const getRules = invokeExtension('declarativeContent.getRules')
+          const removeRules = invokeExtension('declarativeContent.removeRules')
+          const report = (callback: unknown, promise: Promise<any>, withResult: boolean) => {
+            promise.then(
+              (result) => {
+                if (typeof callback === 'function') callBack(callback, null, withResult ? [result] : [])
+              },
+              (error) => {
+                if (typeof callback === 'function') callBack(callback, error, [])
+                else console.error(`Unchecked runtime.lastError: ${errorText(error)}`)
+              },
+            )
+          }
+          // A declarative event: rules, and no listeners.
+          class DeclarativeEvent {
+            addRules(rules: unknown, callback?: unknown) {
+              if (callback !== undefined && typeof callback !== 'function') throw invalid()
+              checkRules(rules)
+              report(callback, serialize(rules as any[]).then((list) => addRules(list)), true)
+            }
+            getRules(ids?: unknown, callback?: unknown) {
+              if (typeof ids === 'function' && callback === undefined) {
+                callback = ids
+                ids = undefined
+              }
+              if (typeof callback !== 'function') throw invalid()
+              checkIds(ids)
+              report(callback, getRules(ids == null ? undefined : [...(ids as string[])]), true)
+            }
+            removeRules(ids?: unknown, callback?: unknown) {
+              if (typeof ids === 'function' && callback === undefined) {
+                callback = ids
+                ids = undefined
+              }
+              if (callback !== undefined && typeof callback !== 'function') throw invalid()
+              checkIds(ids)
+              report(callback, removeRules(ids == null ? undefined : [...(ids as string[])]), false)
+            }
+          }
+          return {
+            PageStateMatcher,
+            ShowAction,
+            ShowPageAction,
+            SetIcon,
+            RequestContentScript,
+            PageStateMatcherInstanceType: {},
+            ShowActionInstanceType: {},
+            ShowPageActionInstanceType: {},
+            SetIconInstanceType: {},
+            RequestContentScriptInstanceType: {},
+            onPageChanged: new DeclarativeEvent(),
           }
         },
       },

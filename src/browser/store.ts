@@ -5,6 +5,13 @@ import { ContextMenuType } from './api/common'
 import { ChromeExtensionImpl } from './impl'
 import { ExtensionEvent } from './router'
 
+export interface DeclarativeActionState {
+  /** ShowAction or ShowPageAction matches: the action is enabled on the tab. */
+  show: boolean
+  /** SetIcon matches: PNG data URLs by size in pixels, from the highest priority rule. */
+  icon?: Record<string, string>
+}
+
 export class ExtensionStore extends EventEmitter {
   /** Tabs observed by the extensions system. */
   tabs = new Set<Electron.WebContents>()
@@ -64,6 +71,35 @@ export class ExtensionStore extends EventEmitter {
   }
 
   urlOverrides: Record<string, string> = {}
+
+  /**
+   * What chrome.declarativeContent rules do to an extension's action on a tab
+   * while they match: ShowAction enables it there, SetIcon gives it an icon
+   * (PNG data URLs by size). Chrome layers these over the action's own state:
+   * a shown action is enabled even after action.disable(), and an icon the
+   * extension set for that tab with action.setIcon wins over the rule's.
+   */
+  private declarativeActions = new Map<string, Map<number, DeclarativeActionState>>()
+
+  getDeclarativeAction(extensionId: string, tabId: number): DeclarativeActionState | undefined {
+    return this.declarativeActions.get(extensionId)?.get(tabId)
+  }
+
+  /** Emits 'declarative-action-changed' (extensionId, tabId) when it changes. */
+  setDeclarativeAction(extensionId: string, tabId: number, state: DeclarativeActionState | undefined) {
+    let tabs = this.declarativeActions.get(extensionId)
+    const before = tabs?.get(tabId)
+    if (!state && !before) return
+    if (state && before && state.show === before.show && state.icon === before.icon) return
+    if (state) {
+      if (!tabs) this.declarativeActions.set(extensionId, (tabs = new Map()))
+      tabs.set(tabId, state)
+    } else if (tabs) {
+      tabs.delete(tabId)
+      if (tabs.size === 0) this.declarativeActions.delete(extensionId)
+    }
+    this.emit('declarative-action-changed', extensionId, tabId)
+  }
 
   /**
    * Tracks which window/tab triggered the most recent browser-action click for

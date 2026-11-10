@@ -6712,6 +6712,12 @@
       "getVoices": {
         "ok": true
       },
+      "getVoices.shape": {
+        "ok": true
+      },
+      "getVoices.callback": {
+        "ok": 1
+      },
       "isSpeaking": {
         "ok": false
       },
@@ -6723,7 +6729,152 @@
       },
       "speak.badRate": {
         "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'rate': Value must be at most 10."
-      }
+      },
+      "speak.badRateType": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'rate': Invalid type: expected number, found string."
+      },
+      "speak.badPitch": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'pitch': Value must be at most 2."
+      },
+      "speak.negativePitch": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'pitch': Value must be at least 0."
+      },
+      "speak.badVolume": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'volume': Value must be at most 1."
+      },
+      "speak.negativeVolume": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'volume': Value must be at least 0."
+      },
+      "speak.badGender": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'gender': Value must be one of female, male."
+      },
+      "speak.badEnqueue": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Error at property 'enqueue': Invalid type: expected boolean, found string."
+      },
+      "speak.unknownOption": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Unexpected property: 'nope'."
+      },
+      "speak.srcId": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): Error at parameter 'options': Unexpected property: 'srcId'."
+      },
+      "speak.notText": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): No matching signature."
+      },
+      "speak.nothing": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): No matching signature."
+      },
+      "speak.badOptions": {
+        "error": "Error in invocation of tts.speak(string utterance, optional tts.TtsOptions options, optional function callback): No matching signature."
+      },
+      "speak.callback": {
+        "ok": 0
+      },
+      "speak.returns": "object",
+      "stop.again": {
+        "ok": "<undefined>"
+      },
+      "pause": {
+        "ok": "<undefined>"
+      },
+      "resume": {
+        "ok": "<undefined>"
+      },
+      "events": [
+        {
+          "type": "start",
+          "keys": [
+            "charIndex",
+            "errorMessage",
+            "length",
+            "type"
+          ],
+          "charIndex": 0
+        },
+        {
+          "type": "word",
+          "keys": [
+            "charIndex",
+            "errorMessage",
+            "length",
+            "type"
+          ],
+          "charIndex": 0,
+          "length": 5
+        },
+        {
+          "type": "end",
+          "keys": [
+            "charIndex",
+            "errorMessage",
+            "length",
+            "type"
+          ],
+          "charIndex": 5
+        }
+      ],
+      "events.global": [
+        {
+          "type": "start",
+          "keys": [
+            "charIndex",
+            "isFinalEvent",
+            "srcId",
+            "type"
+          ],
+          "srcId": "number",
+          "isFinalEvent": false
+        },
+        {
+          "type": "word",
+          "keys": [
+            "charIndex",
+            "isFinalEvent",
+            "length",
+            "srcId",
+            "type"
+          ],
+          "srcId": "number",
+          "isFinalEvent": false
+        },
+        {
+          "type": "end",
+          "keys": [
+            "charIndex",
+            "isFinalEvent",
+            "srcId",
+            "type"
+          ],
+          "srcId": "number",
+          "isFinalEvent": true
+        }
+      ],
+      "speak.withoutOnEvent": {
+        "ok": "<undefined>"
+      },
+      "events.withoutOnEvent": 0,
+      "isSpeaking.during": {
+        "ok": true
+      },
+      "events.interrupted": {
+        "first": [
+          "start",
+          "interrupted"
+        ],
+        "second": [
+          "cancelled"
+        ],
+        "third": [
+          "start",
+          "end"
+        ]
+      },
+      "isSpeaking.after": {
+        "ok": false
+      },
+      "events.stopped": [
+        "start",
+        "interrupted"
+      ]
     },
     "offscreen": {
       "hasDocument": {
@@ -6909,8 +7060,47 @@
           "size": true
         }
       },
+      "saveAsMHTML.content": {
+        "ok": {
+          "type": "",
+          "mhtml": true,
+          "multipart": true,
+          "title": true
+        }
+      },
       "saveAsMHTML.missing": {
         "error": "Cannot find the tab for this request."
+      },
+      "saveAsMHTML.callback": {
+        "ok": {
+          "args": 1,
+          "value": "undefined",
+          "lastError": "Cannot find the tab for this request."
+        }
+      },
+      "saveAsMHTML.badTabId": {
+        "error": "Error in invocation of pageCapture.saveAsMHTML(object details, optional function callback): Error at parameter 'details': Error at property 'tabId': Invalid type: expected integer, found string."
+      },
+      "saveAsMHTML.noDetails": {
+        "error": "Error in invocation of pageCapture.saveAsMHTML(object details, optional function callback): No matching signature."
+      },
+      "saveAsMHTML.noTabId": {
+        "error": "Error in invocation of pageCapture.saveAsMHTML(object details, optional function callback): Error at parameter 'details': Missing required property 'tabId'."
+      },
+      "saveAsMHTML.extra": {
+        "error": "Error in invocation of pageCapture.saveAsMHTML(object details, optional function callback): Error at parameter 'details': Unexpected property: 'nope'."
+      },
+      "saveAsMHTML.noHostPermission": {
+        "ok": true
+      },
+      "saveAsMHTML.ownPage": {
+        "ok": true
+      },
+      "saveAsMHTML.otherExtension": {
+        "error": "Don't have permissions required to capture this page."
+      },
+      "saveAsMHTML.blank": {
+        "error": "Don't have permissions required to capture this page."
       },
       "tabCapture.getMediaStreamId": {
         "error": "Extension has not been invoked for the current page (see activeTab permission). Chrome pages cannot be captured."
@@ -6918,8 +7108,46 @@
       "tabCapture.getMediaStreamId.missing": {
         "error": "Invalid tab specified."
       },
+      "tabCapture.getMediaStreamId.noTarget": {
+        "error": "Extension has not been invoked for the current page (see activeTab permission). Chrome pages cannot be captured."
+      },
+      "tabCapture.getMediaStreamId.ownPage": {
+        "error": "Extension has not been invoked for the current page (see activeTab permission). Chrome pages cannot be captured."
+      },
+      "tabCapture.getMediaStreamId.consumerMissing": {
+        "error": "Extension has not been invoked for the current page (see activeTab permission). Chrome pages cannot be captured."
+      },
+      "tabCapture.getMediaStreamId.badTabId": {
+        "error": "Error in invocation of tabCapture.getMediaStreamId(optional tabCapture.GetMediaStreamOptions options, optional function callback): Error at parameter 'options': Error at property 'targetTabId': Invalid type: expected integer, found string."
+      },
+      "tabCapture.getMediaStreamId.extra": {
+        "error": "Error in invocation of tabCapture.getMediaStreamId(optional tabCapture.GetMediaStreamOptions options, optional function callback): Error at parameter 'options': Unexpected property: 'nope'."
+      },
       "tabCapture.getCapturedTabs": {
         "ok": []
+      },
+      "tabCapture.capture": "undefined",
+      "desktopCapture.noSources": {
+        "ok": {
+          "ret": "number",
+          "args": 2,
+          "streamId": "undefined",
+          "lastError": "A target tab is required when called from a service worker context."
+        }
+      },
+      "desktopCapture.badSource": {
+        "ok": {
+          "threw": "Error in invocation of desktopCapture.chooseDesktopMedia(array sources, optional tabs.Tab targetTab, optional object options, function callback): Error at parameter 'sources': Error at index 0: Value must be one of audio, screen, tab, window."
+        }
+      },
+      "desktopCapture.noCallback": {
+        "error": "Error in invocation of desktopCapture.chooseDesktopMedia(array sources, optional tabs.Tab targetTab, optional object options, function callback): No matching signature."
+      },
+      "desktopCapture.cancel": {
+        "ok": "<undefined>"
+      },
+      "desktopCapture.cancel.badId": {
+        "error": "Error in invocation of desktopCapture.cancelChooseDesktopMedia(integer desktopMediaRequestId): No matching signature."
       }
     },
     "userScripts": {
@@ -6953,7 +7181,337 @@
       },
       "removeRules.one": {
         "ok": "<no args>"
-      }
+      },
+      "onPageChanged.members": [
+        "addRules",
+        "getRules",
+        "removeRules"
+      ],
+      "PageStateMatcher": {
+        "ok": {
+          "pageUrl": {
+            "hostEquals": "127.0.0.1",
+            "schemes": [
+              "http"
+            ],
+            "ports": [
+              80,
+              [
+                8000,
+                9000
+              ]
+            ]
+          },
+          "css": [
+            "p",
+            "a, b"
+          ],
+          "isBookmarked": false,
+          "instanceType": "declarativeContent.PageStateMatcher"
+        },
+        "own": [
+          "css",
+          "instanceType",
+          "isBookmarked",
+          "pageUrl"
+        ]
+      },
+      "PageStateMatcher.empty": {
+        "ok": {
+          "instanceType": "declarativeContent.PageStateMatcher"
+        },
+        "own": [
+          "instanceType"
+        ]
+      },
+      "PageStateMatcher.badType": {
+        "threw": "Invalid invocation: Error at property 'pageUrl': Error at property 'hostEquals': Invalid type: expected string, found integer."
+      },
+      "PageStateMatcher.unknown": {
+        "threw": "Invalid invocation: Unexpected property: 'nope'."
+      },
+      "PageStateMatcher.unknownUrlKey": {
+        "threw": "Invalid invocation: Error at property 'pageUrl': Unexpected property: 'nope'."
+      },
+      "PageStateMatcher.badPorts": {
+        "threw": "Invalid invocation: Error at property 'pageUrl': Error at property 'ports': Error at index 0: Invalid type: expected [integer|array], found string."
+      },
+      "PageStateMatcher.cssNotList": {
+        "threw": "Invalid invocation: Error at property 'css': Invalid type: expected array, found string."
+      },
+      "PageStateMatcher.cssNotCompound": {
+        "threw": "Invalid invocation: Invalid CSS selector: a b"
+      },
+      "PageStateMatcher.cssInvalid": {
+        "threw": "Invalid invocation: Invalid CSS selector: ::::"
+      },
+      "ShowAction": {
+        "ok": {
+          "instanceType": "declarativeContent.ShowAction"
+        },
+        "own": [
+          "instanceType"
+        ]
+      },
+      "ShowAction.unknown": {
+        "threw": "Invalid invocation: Unexpected property: 'nope'."
+      },
+      "ShowPageAction": {
+        "ok": {
+          "instanceType": "declarativeContent.ShowAction"
+        },
+        "own": [
+          "instanceType"
+        ]
+      },
+      "SetIcon.nothing": {
+        "threw": "Either the path or imageData property must be specified."
+      },
+      "SetIcon.imageData": {
+        "instanceType": "declarativeContent.SetIcon",
+        "sizes": [
+          "2"
+        ],
+        "kept": false,
+        "own": [
+          "imageData",
+          "instanceType"
+        ]
+      },
+      "RequestContentScript": {
+        "ok": {
+          "css": [
+            "inject.css"
+          ],
+          "js": [
+            "inject.js"
+          ],
+          "allFrames": true,
+          "matchAboutBlank": false,
+          "instanceType": "declarativeContent.RequestContentScript"
+        },
+        "own": [
+          "allFrames",
+          "css",
+          "instanceType",
+          "js",
+          "matchAboutBlank"
+        ]
+      },
+      "RequestContentScript.badType": {
+        "threw": "Invalid invocation: Error at property 'js': Invalid type: expected array, found string."
+      },
+      "addRules.full": {
+        "ok": [
+          [
+            {
+              "actions": [
+                {
+                  "instanceType": "declarativeContent.ShowAction"
+                },
+                {
+                  "instanceType": "declarativeContent.RequestContentScript",
+                  "js": [
+                    "inject.js"
+                  ]
+                }
+              ],
+              "conditions": [
+                {
+                  "css": [
+                    "p"
+                  ],
+                  "instanceType": "declarativeContent.PageStateMatcher",
+                  "pageUrl": {
+                    "hostEquals": "127.0.0.1",
+                    "pathPrefix": "/page"
+                  }
+                }
+              ],
+              "id": "full",
+              "priority": 7,
+              "tags": [
+                "a"
+              ]
+            }
+          ]
+        ]
+      },
+      "addRules.noId": {
+        "ok": [
+          {
+            "generatedId": true,
+            "priority": 100
+          }
+        ]
+      },
+      "addRules.duplicate": {
+        "lastError": "Id full was used multiple times."
+      },
+      "addRules.duplicateInBatch": {
+        "lastError": "Id d1 was used multiple times."
+      },
+      "addRules.typedObjects": {
+        "ok": [
+          [
+            {
+              "actions": [
+                {
+                  "instanceType": "declarativeContent.ShowAction"
+                }
+              ],
+              "conditions": [
+                {
+                  "instanceType": "declarativeContent.PageStateMatcher",
+                  "pageUrl": {
+                    "hostEquals": "x"
+                  }
+                }
+              ],
+              "id": "typed",
+              "priority": 100
+            }
+          ]
+        ]
+      },
+      "addRules.empty": {
+        "ok": [
+          [
+            {
+              "actions": [],
+              "conditions": [],
+              "id": "empty",
+              "priority": 100
+            }
+          ]
+        ]
+      },
+      "addRules.plainCondition": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.plainAction": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.actionAsCondition": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.noActions": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.notList": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.badId": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.badPriority": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.upperCaseHost": {
+        "lastError": "Host values need to be in lower case."
+      },
+      "addRules.upperCaseScheme": {
+        "lastError": "Scheme values need to be in lower case."
+      },
+      "addRules.badRegex": {
+        "lastError": "Could not parse regular expression '(': missing ): ("
+      },
+      "addRules.lookahead": {
+        "lastError": "Could not parse regular expression 'a(?=b)': invalid perl operator: (?="
+      },
+      "addRules.badCidr": {
+        "lastError": "Failed parsing CIDR"
+      },
+      "addRules.scriptWithoutFiles": {
+        "lastError": "Missing parameter is required: css or js"
+      },
+      "addRules.scriptMissingFile": {
+        "ok": [
+          "p13"
+        ]
+      },
+      "addRules.isBookmarked": {
+        "ok": [
+          "p14"
+        ]
+      },
+      "getRules.all": {
+        "ok": [
+          "_0_",
+          "empty",
+          "full",
+          "p13",
+          "p14",
+          "typed"
+        ]
+      },
+      "getRules.some": {
+        "ok": [
+          [
+            {
+              "actions": [
+                {
+                  "instanceType": "declarativeContent.ShowAction"
+                },
+                {
+                  "instanceType": "declarativeContent.RequestContentScript",
+                  "js": [
+                    "inject.js"
+                  ]
+                }
+              ],
+              "conditions": [
+                {
+                  "css": [
+                    "p"
+                  ],
+                  "instanceType": "declarativeContent.PageStateMatcher",
+                  "pageUrl": {
+                    "hostEquals": "127.0.0.1",
+                    "pathPrefix": "/page"
+                  }
+                }
+              ],
+              "id": "full",
+              "priority": 7,
+              "tags": [
+                "a"
+              ]
+            }
+          ]
+        ]
+      },
+      "getRules.badIds": {
+        "threw": "Invalid invocation"
+      },
+      "removeRules.missing": {
+        "ok": []
+      },
+      "removeRules.callbackOnly": {
+        "ok": []
+      },
+      "getRules.afterRemove": {
+        "ok": [
+          []
+        ]
+      },
+      "getRules.noCallback": {
+        "threw": "Invalid invocation"
+      },
+      "addRules.noCallback": "undefined",
+      "addRules.pages": {
+        "ok": [
+          "script",
+          "css",
+          "cssMissing",
+          "regex"
+        ]
+      },
+      "injects.url": "yes",
+      "injects.css": "yes",
+      "injects.cssMissing": "no",
+      "injects.regex": "yes",
+      "injects.noMatch": "no"
     },
     "extension": {
       "inIncognitoContext": false,

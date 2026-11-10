@@ -1398,12 +1398,85 @@ suite('readingList', async (t, env) => {
 })
 
 // ---------------------------------------------------------------- tts
+// Every utterance is spoken at volume 0, so a run makes no sound.
+const speakAndWait = (text, opts) => {
+  const events = []
+  let started
+  const start = new Promise((resolve) => (started = resolve))
+  const done = new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(events), 8000)
+    chrome.tts.speak(text, Object.assign({ volume: 0 }, opts || {}, {
+      onEvent: (e) => {
+        events.push(e)
+        if (e.type === 'start') started()
+        if (['end', 'interrupted', 'cancelled', 'error'].includes(e.type)) {
+          clearTimeout(timer)
+          resolve(events)
+        }
+      },
+    }))
+  })
+  return { start, done }
+}
+const eventView = (e) => ({ type: e.type, keys: Object.keys(e).sort(), charIndex: e.charIndex, length: e.length })
+const noWords = (events) => events.map((e) => e.type).filter((type) => type !== 'word')
+
 suite('tts', async (t) => {
   await t.call('getVoices', () => chrome.tts.getVoices(), (v) => Array.isArray(v))
+  await t.call('getVoices.shape', () => chrome.tts.getVoices(), (v) => v.every((x) => typeof x.voiceName === 'string' && typeof x.remote === 'boolean' && Array.isArray(x.eventTypes)))
+  await t.call('getVoices.callback', () => new Promise((resolve) => chrome.tts.getVoices((...args) => resolve(args.length))))
   await t.call('isSpeaking', () => chrome.tts.isSpeaking())
   await t.call('speak', () => chrome.tts.speak('probe', { rate: 3, volume: 0 }))
   await t.call('stop', () => chrome.tts.stop())
   await t.call('speak.badRate', () => chrome.tts.speak('probe', { rate: 50 }))
+  await t.call('speak.badRateType', () => chrome.tts.speak('probe', { rate: 'fast' }))
+  await t.call('speak.badPitch', () => chrome.tts.speak('probe', { pitch: 3 }))
+  await t.call('speak.negativePitch', () => chrome.tts.speak('probe', { pitch: -1 }))
+  await t.call('speak.badVolume', () => chrome.tts.speak('probe', { volume: 2 }))
+  await t.call('speak.negativeVolume', () => chrome.tts.speak('probe', { volume: -1 }))
+  await t.call('speak.badGender', () => chrome.tts.speak('probe', { gender: 'other' }))
+  await t.call('speak.badEnqueue', () => chrome.tts.speak('probe', { enqueue: 'yes' }))
+  await t.call('speak.unknownOption', () => chrome.tts.speak('probe', { nope: 1 }))
+  await t.call('speak.srcId', () => chrome.tts.speak('probe', { srcId: 7 }))
+  await t.call('speak.notText', () => chrome.tts.speak(5))
+  await t.call('speak.nothing', () => chrome.tts.speak())
+  await t.call('speak.badOptions', () => chrome.tts.speak('probe', 5))
+  await t.call('speak.callback', () => new Promise((resolve) => chrome.tts.speak('probe', { volume: 0 }, (...args) => resolve(args.length))))
+  t.set('speak.returns', typeof chrome.tts.speak('probe', { volume: 0, onEvent: () => {} }))
+  await t.call('stop.again', () => chrome.tts.stop())
+  await t.call('pause', () => chrome.tts.pause())
+  await t.call('resume', () => chrome.tts.resume())
+  await probe.sleep(300)
+
+  // Events reach the onEvent option, and chrome.tts.onEvent with the
+  // utterance's srcId, only for utterances that asked for them.
+  const global = []
+  const onGlobal = (e) => global.push(e)
+  chrome.tts.onEvent.addListener(onGlobal)
+  const one = speakAndWait('probe')
+  t.set('events', (await one.done).map(eventView))
+  t.set('events.global', global.map((e) => ({ type: e.type, keys: Object.keys(e).sort(), srcId: typeof e.srcId, isFinalEvent: e.isFinalEvent })))
+  global.length = 0
+  await t.call('speak.withoutOnEvent', () => chrome.tts.speak('probe', { volume: 0 }))
+  await probe.sleep(1500)
+  t.set('events.withoutOnEvent', global.length)
+
+  // A speak that does not enqueue cuts off what is speaking and drops what waits.
+  const first = speakAndWait('the first one is long enough to be cut off before it ends')
+  await Promise.race([first.start, probe.sleep(5000)])
+  await t.call('isSpeaking.during', () => chrome.tts.isSpeaking())
+  const second = speakAndWait('second', { enqueue: true })
+  const third = speakAndWait('third')
+  t.set('events.interrupted', { first: noWords(await first.done), second: noWords(await second.done), third: noWords(await third.done) })
+  await t.call('isSpeaking.after', () => chrome.tts.isSpeaking())
+  global.length = 0
+
+  // stop() cuts off speech too.
+  const stopped = speakAndWait('this one is stopped before it is done speaking')
+  await Promise.race([stopped.start, probe.sleep(5000)])
+  await chrome.tts.stop()
+  t.set('events.stopped', noWords(await stopped.done))
+  chrome.tts.onEvent.removeListener(onGlobal)
 })
 
 // ---------------------------------------------------------------- offscreen
@@ -1472,15 +1545,59 @@ suite('debugger', async (t, env) => {
   await closeTabs([tab.id])
 })
 
-// ---------------------------------------------------------------- pageCapture, tabCapture
+// ---------------------------------------------------------------- pageCapture, tabCapture, desktopCapture
 suite('capture', async (t, env) => {
   const tab = await openTab(env.base + 'page?capture')
   await t.call('saveAsMHTML', () => chrome.pageCapture.saveAsMHTML({ tabId: tab.id }), (blob) => blob && { type: Object.prototype.toString.call(blob), size: blob.size > 0 })
+  await t.call('saveAsMHTML.content', async () => {
+    const blob = await chrome.pageCapture.saveAsMHTML({ tabId: tab.id })
+    const text = await blob.text()
+    return { type: blob.type, mhtml: text.startsWith('From: <Saved by Blink>'), multipart: text.includes('Content-Type: multipart/related'), title: text.includes('Subject: Probe page') }
+  })
   await t.call('saveAsMHTML.missing', () => chrome.pageCapture.saveAsMHTML({ tabId: MISSING_TAB }))
+  await t.call('saveAsMHTML.callback', () => new Promise((resolve) => chrome.pageCapture.saveAsMHTML({ tabId: MISSING_TAB }, (...args) => resolve({ args: args.length, value: typeof args[0], lastError: chrome.runtime.lastError && chrome.runtime.lastError.message }))))
+  await t.call('saveAsMHTML.badTabId', () => chrome.pageCapture.saveAsMHTML({ tabId: 'x' }))
+  await t.call('saveAsMHTML.noDetails', () => chrome.pageCapture.saveAsMHTML())
+  await t.call('saveAsMHTML.noTabId', () => chrome.pageCapture.saveAsMHTML({}))
+  await t.call('saveAsMHTML.extra', () => chrome.pageCapture.saveAsMHTML({ tabId: tab.id, nope: 1 }))
+  // http pages need no host permission; other kinds of page are refused.
+  const other = await openTab(env.other + 'page?capture')
+  await t.call('saveAsMHTML.noHostPermission', () => chrome.pageCapture.saveAsMHTML({ tabId: other.id }), (blob) => blob && blob.size > 0)
+  const own = await openTab(chrome.runtime.getURL('page.html'))
+  await t.call('saveAsMHTML.ownPage', () => chrome.pageCapture.saveAsMHTML({ tabId: own.id }), (blob) => blob && blob.size > 0)
+  const peer = await openTab(`chrome-extension://${PEER_ID}/page.html`)
+  await t.call('saveAsMHTML.otherExtension', () => chrome.pageCapture.saveAsMHTML({ tabId: peer.id }), (blob) => blob && blob.size > 0)
+  const blank = await openTab('about:blank')
+  await t.call('saveAsMHTML.blank', () => chrome.pageCapture.saveAsMHTML({ tabId: blank.id }), (blob) => blob && blob.size > 0)
+
+  // The probe was never invoked on a tab, so it may capture none.
   await t.call('tabCapture.getMediaStreamId', () => chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id }), (id) => typeof id)
   await t.call('tabCapture.getMediaStreamId.missing', () => chrome.tabCapture.getMediaStreamId({ targetTabId: MISSING_TAB }))
+  await t.call('tabCapture.getMediaStreamId.noTarget', () => chrome.tabCapture.getMediaStreamId())
+  await t.call('tabCapture.getMediaStreamId.ownPage', () => chrome.tabCapture.getMediaStreamId({ targetTabId: own.id }))
+  await t.call('tabCapture.getMediaStreamId.consumerMissing', () => chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id, consumerTabId: MISSING_TAB }))
+  await t.call('tabCapture.getMediaStreamId.badTabId', () => chrome.tabCapture.getMediaStreamId({ targetTabId: 'x' }))
+  await t.call('tabCapture.getMediaStreamId.extra', () => chrome.tabCapture.getMediaStreamId({ targetTabId: tab.id, nope: 1 }))
   await t.call('tabCapture.getCapturedTabs', () => chrome.tabCapture.getCapturedTabs())
-  await closeTabs([tab.id])
+  t.set('tabCapture.capture', typeof chrome.tabCapture.capture)
+
+  // desktopCapture: only calls Chrome answers without showing its picker.
+  const choose = (args) => new Promise((resolve) => {
+    let ret
+    try {
+      ret = chrome.desktopCapture.chooseDesktopMedia(...args, (...a) => {
+        resolve({ ret: typeof ret, args: a.length, streamId: typeof a[0], lastError: chrome.runtime.lastError ? chrome.runtime.lastError.message : null })
+      })
+    } catch (e) {
+      resolve({ threw: probe.errorMessage(e) })
+    }
+  })
+  await t.call('desktopCapture.noSources', () => choose([[]]))
+  await t.call('desktopCapture.badSource', () => choose([['nope']]))
+  await t.call('desktopCapture.noCallback', () => chrome.desktopCapture.chooseDesktopMedia(['screen']))
+  await t.call('desktopCapture.cancel', () => chrome.desktopCapture.cancelChooseDesktopMedia(123456))
+  await t.call('desktopCapture.cancel.badId', () => chrome.desktopCapture.cancelChooseDesktopMedia('x'))
+  await closeTabs([tab.id, other.id, own.id, peer.id, blank.id])
 })
 
 // ---------------------------------------------------------------- userScripts
@@ -1509,8 +1626,39 @@ suite('userScripts', async (t, env) => {
 })
 
 // ---------------------------------------------------------------- declarativeContent
-suite('declarativeContent', async (t) => {
+suite('declarativeContent', async (t, env) => {
   const dc = chrome.declarativeContent
+  const json = (v) => JSON.parse(JSON.stringify(v))
+  // Records what the callback got, or the error, or what the call threw.
+  const rules = (key, fn, map) => new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      t.set(key, 'no callback')
+      resolve()
+    }, 4000)
+    try {
+      fn((...args) => {
+        clearTimeout(timer)
+        const lastError = chrome.runtime.lastError
+        t.set(key, lastError ? { lastError: lastError.message } : { ok: map ? map(...args) : json(args) })
+        resolve(args[0])
+      })
+    } catch (e) {
+      clearTimeout(timer)
+      t.set(key, { threw: probe.errorMessage(e) })
+      resolve()
+    }
+  })
+  const make = (key, fn) => {
+    try {
+      const value = fn()
+      t.set(key, { ok: json(value), own: Object.getOwnPropertyNames(value).sort() })
+    } catch (e) {
+      t.set(key, { threw: probe.errorMessage(e) })
+    }
+  }
+  const rule = (id, condition, action) => ({ id, conditions: [new dc.PageStateMatcher(condition || {})], actions: [action || new dc.ShowAction()] })
+  const ids = (list) => list.map((r) => r.id)
+
   await t.callback('removeRules', (cb) => dc.onPageChanged.removeRules(undefined, cb))
   await t.callback('addRules', (cb) => dc.onPageChanged.addRules([{
     id: 'probe',
@@ -1519,6 +1667,102 @@ suite('declarativeContent', async (t) => {
   }], cb))
   await t.callback('getRules', (cb) => dc.onPageChanged.getRules(cb))
   await t.callback('removeRules.one', (cb) => dc.onPageChanged.removeRules(['probe'], cb))
+
+  // The event takes rules and no listeners.
+  t.set('onPageChanged.members', Object.getOwnPropertyNames(Object.getPrototypeOf(dc.onPageChanged)).concat(Object.getOwnPropertyNames(dc.onPageChanged)).filter((k) => k !== 'constructor').sort())
+
+  // Constructors check their parameters like Chrome's schema does.
+  make('PageStateMatcher', () => new dc.PageStateMatcher({ pageUrl: { hostEquals: '127.0.0.1', schemes: ['http'], ports: [80, [8000, 9000]] }, css: ['p', 'a, b'], isBookmarked: false }))
+  make('PageStateMatcher.empty', () => new dc.PageStateMatcher())
+  make('PageStateMatcher.badType', () => new dc.PageStateMatcher({ pageUrl: { hostEquals: 5 } }))
+  make('PageStateMatcher.unknown', () => new dc.PageStateMatcher({ nope: 1 }))
+  make('PageStateMatcher.unknownUrlKey', () => new dc.PageStateMatcher({ pageUrl: { nope: 'a' } }))
+  make('PageStateMatcher.badPorts', () => new dc.PageStateMatcher({ pageUrl: { ports: ['x'] } }))
+  make('PageStateMatcher.cssNotList', () => new dc.PageStateMatcher({ css: 'p' }))
+  make('PageStateMatcher.cssNotCompound', () => new dc.PageStateMatcher({ css: ['a b'] }))
+  make('PageStateMatcher.cssInvalid', () => new dc.PageStateMatcher({ css: ['::::'] }))
+  make('ShowAction', () => new dc.ShowAction())
+  make('ShowAction.unknown', () => new dc.ShowAction({ nope: 1 }))
+  make('ShowPageAction', () => new dc.ShowPageAction())
+  make('SetIcon.nothing', () => new dc.SetIcon({}))
+  try {
+    const icon = new dc.SetIcon({ imageData: new ImageData(2, 2) })
+    t.set('SetIcon.imageData', { instanceType: icon.instanceType, sizes: Object.keys(icon.imageData), kept: icon.imageData[2] instanceof ImageData, own: Object.getOwnPropertyNames(icon).sort() })
+  } catch (e) {
+    t.set('SetIcon.imageData', { threw: probe.errorMessage(e) })
+  }
+  make('RequestContentScript', () => new dc.RequestContentScript({ css: ['inject.css'], js: ['inject.js'], allFrames: true, matchAboutBlank: false }))
+  make('RequestContentScript.badType', () => new dc.RequestContentScript({ js: 'inject.js' }))
+
+  // Rules come back with their ids and priorities, sorted by id.
+  await rules('addRules.full', (cb) => dc.onPageChanged.addRules([{
+    id: 'full',
+    priority: 7,
+    tags: ['a'],
+    conditions: [new dc.PageStateMatcher({ pageUrl: { hostEquals: '127.0.0.1', pathPrefix: '/page' }, css: ['p'] })],
+    actions: [new dc.ShowAction(), new dc.RequestContentScript({ js: ['inject.js'] })],
+  }], cb))
+  await rules('addRules.noId', (cb) => dc.onPageChanged.addRules([{ conditions: [new dc.PageStateMatcher({})], actions: [new dc.ShowAction()] }], cb), (added) => added.map((r) => ({ generatedId: /^_\d+_$/.test(r.id), priority: r.priority })))
+  await rules('addRules.duplicate', (cb) => dc.onPageChanged.addRules([rule('full')], cb))
+  await rules('addRules.duplicateInBatch', (cb) => dc.onPageChanged.addRules([rule('d1'), rule('d1')], cb))
+  await rules('addRules.typedObjects', (cb) => dc.onPageChanged.addRules([{ id: 'typed', conditions: [{ instanceType: 'declarativeContent.PageStateMatcher', pageUrl: { hostEquals: 'x' } }], actions: [{ instanceType: 'declarativeContent.ShowAction' }] }], cb))
+  await rules('addRules.empty', (cb) => dc.onPageChanged.addRules([{ id: 'empty', conditions: [], actions: [] }], cb))
+  await rules('addRules.plainCondition', (cb) => dc.onPageChanged.addRules([{ id: 'p1', conditions: [{ pageUrl: { hostEquals: 'x' } }], actions: [new dc.ShowAction()] }], cb))
+  await rules('addRules.plainAction', (cb) => dc.onPageChanged.addRules([{ id: 'p2', conditions: [new dc.PageStateMatcher({})], actions: [{}] }], cb))
+  await rules('addRules.actionAsCondition', (cb) => dc.onPageChanged.addRules([{ id: 'p3', conditions: [new dc.ShowAction()], actions: [new dc.ShowAction()] }], cb))
+  await rules('addRules.noActions', (cb) => dc.onPageChanged.addRules([{ id: 'p4', conditions: [] }], cb))
+  await rules('addRules.notList', (cb) => dc.onPageChanged.addRules({ id: 'p5' }, cb))
+  await rules('addRules.badId', (cb) => dc.onPageChanged.addRules([{ id: 5, conditions: [], actions: [] }], cb))
+  await rules('addRules.badPriority', (cb) => dc.onPageChanged.addRules([{ id: 'p6', priority: 'x', conditions: [], actions: [] }], cb))
+  await rules('addRules.upperCaseHost', (cb) => dc.onPageChanged.addRules([rule('p7', { pageUrl: { hostEquals: 'Example.com' } })], cb))
+  await rules('addRules.upperCaseScheme', (cb) => dc.onPageChanged.addRules([rule('p8', { pageUrl: { schemes: ['HTTP'] } })], cb))
+  await rules('addRules.badRegex', (cb) => dc.onPageChanged.addRules([rule('p9', { pageUrl: { urlMatches: '(' } })], cb))
+  await rules('addRules.lookahead', (cb) => dc.onPageChanged.addRules([rule('p10', { pageUrl: { urlMatches: 'a(?=b)' } })], cb))
+  await rules('addRules.badCidr', (cb) => dc.onPageChanged.addRules([rule('p11', { pageUrl: { cidrBlocks: ['nope'] } })], cb))
+  await rules('addRules.scriptWithoutFiles', (cb) => dc.onPageChanged.addRules([rule('p12', {}, new dc.RequestContentScript({}))], cb))
+  await rules('addRules.scriptMissingFile', (cb) => dc.onPageChanged.addRules([rule('p13', {}, new dc.RequestContentScript({ js: ['missing.js'] }))], cb), ids)
+  await rules('addRules.isBookmarked', (cb) => dc.onPageChanged.addRules([rule('p14', { isBookmarked: false })], cb), ids)
+  await rules('getRules.all', (cb) => dc.onPageChanged.getRules(cb), ids)
+  await rules('getRules.some', (cb) => dc.onPageChanged.getRules(['full', 'missing'], cb))
+  await rules('getRules.badIds', (cb) => dc.onPageChanged.getRules('full', cb))
+  await rules('removeRules.missing', (cb) => dc.onPageChanged.removeRules(['missing'], cb))
+  await rules('removeRules.callbackOnly', (cb) => dc.onPageChanged.removeRules(cb))
+  await rules('getRules.afterRemove', (cb) => dc.onPageChanged.getRules(cb))
+  try {
+    t.set('getRules.noCallback', typeof dc.onPageChanged.getRules())
+  } catch (e) {
+    t.set('getRules.noCallback', { threw: probe.errorMessage(e) })
+  }
+  t.set('addRules.noCallback', typeof dc.onPageChanged.addRules([]))
+
+  // What rules do to pages: RequestContentScript injects where the page
+  // matches, by URL and by CSS selector.
+  await rules('addRules.pages', (cb) => dc.onPageChanged.addRules([
+    rule('script', { pageUrl: { hostEquals: '127.0.0.1', queryContains: 'dcscript' } }, new dc.RequestContentScript({ js: ['inject.js'] })),
+    rule('css', { pageUrl: { queryContains: 'dccss' }, css: ['#closed-host'] }, new dc.RequestContentScript({ js: ['inject.js'] })),
+    rule('cssMissing', { pageUrl: { queryContains: 'dcnope' }, css: ['#nope'] }, new dc.RequestContentScript({ js: ['inject.js'] })),
+    rule('regex', { pageUrl: { urlMatches: '^http://127\\.0\\.0\\.1:[0-9]+/page\\?dcregex$' } }, new dc.RequestContentScript({ js: ['inject.js'] })),
+  ], cb), ids)
+  const injected = async (tabId) => {
+    try {
+      const [r] = await chrome.scripting.executeScript({ target: { tabId }, func: () => document.documentElement.dataset.injected || 'no' })
+      return r.result
+    } catch (e) {
+      return { error: probe.errorMessage(e) }
+    }
+  }
+  const visit = async (key, url) => {
+    const tab = await openTab(url)
+    await waitFor(async () => (await injected(tab.id)) === 'yes', 3000)
+    t.set(key, await injected(tab.id))
+    await closeTabs([tab.id])
+  }
+  await visit('injects.url', env.base + 'page?dcscript')
+  await visit('injects.css', env.base + 'page?dccss')
+  await visit('injects.cssMissing', env.base + 'page?dcnope')
+  await visit('injects.regex', env.base + 'page?dcregex')
+  await visit('injects.noMatch', env.base + 'page?plain')
+  await new Promise((resolve) => dc.onPageChanged.removeRules(undefined, resolve))
 })
 
 // ---------------------------------------------------------------- extension

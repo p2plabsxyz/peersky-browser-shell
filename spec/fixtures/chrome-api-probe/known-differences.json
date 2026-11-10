@@ -73,18 +73,6 @@
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
     },
     {
-      "path": "probe.tts.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (9 differences)."
-    },
-    {
-      "path": "probe.capture.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
-    },
-    {
-      "path": "probe.declarativeContent.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (16 differences)."
-    },
-    {
       "path": "peer.surface.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (22 differences)."
     },

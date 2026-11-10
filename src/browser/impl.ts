@@ -191,4 +191,26 @@ export interface ChromeExtensionImpl {
   getManagedStorage?(
     extension: Electron.Extension,
   ): Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>
+
+  /**
+   * Shows the host's picker for chrome.desktopCapture.chooseDesktopMedia, so
+   * the person can choose a screen or window to share with the extension.
+   *
+   * Resolve with the chosen source's desktopCapturer id (such as 'screen:1:0'
+   * or 'window:42:0'; the extension passes it to getUserMedia as
+   * chromeMediaSourceId with chromeMediaSource 'desktop') and whether its
+   * audio may be shared, or with null when the person cancels. Offer only the
+   * kinds listed in `sources`. `signal` aborts when the extension cancels the
+   * request or the tab it was made for closes: close the picker then.
+   *
+   * Without this hook every request is answered as Chrome answers a person
+   * who closes its picker: with an empty stream id.
+   */
+  chooseDesktopMedia?(details: {
+    extension: Electron.Extension
+    sources: Array<'screen' | 'window' | 'tab' | 'audio'>
+    /** The tab the stream is for, when the extension named one. */
+    tab?: Electron.WebContents
+    signal: AbortSignal
+  }): Promise<{ id: string; audio?: boolean } | null | undefined> | { id: string; audio?: boolean } | null | undefined
 }

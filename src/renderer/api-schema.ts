@@ -117,24 +117,6 @@ export const API_SCHEMA: Record<string, NamespaceSchema> = {
   tabs: {
     methods: ['discard', 'group', 'ungroup', 'detectLanguage'],
   },
-  desktopCapture: {
-    permission: 'desktopCapture',
-    methods: ['chooseDesktopMedia', 'cancelChooseDesktopMedia'],
-  },
-  pageCapture: {
-    permission: 'pageCapture',
-    methods: ['saveAsMHTML'],
-  },
-  tabCapture: {
-    permission: 'tabCapture',
-    methods: ['getCapturedTabs', 'getMediaStreamId'],
-    events: ['onStatusChanged'],
-  },
-  tts: {
-    permission: 'tts',
-    methods: ['getVoices', 'isSpeaking', 'pause', 'resume', 'speak', 'stop'],
-    events: ['onEvent', 'onVoicesChanged'],
-  },
   omnibox: {
     manifestKey: 'omnibox',
     methods: ['sendSuggestions', 'setDefaultSuggestion'],

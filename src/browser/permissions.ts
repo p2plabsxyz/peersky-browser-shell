@@ -92,6 +92,7 @@ export class ExtensionPermissions {
   private granted = new Map<string, Granted>()
   private manifests = new Map<string, ReturnType<typeof readManifestPermissions>>()
   private activeTabs = new Map<string, Map<number, string>>()
+  private captureTabs = new Map<string, Map<number, string>>()
 
   constructor(private host: PermissionsHost) {}
 
@@ -126,6 +127,7 @@ export class ExtensionPermissions {
     this.granted.delete(extensionId)
     this.manifests.delete(extensionId)
     this.activeTabs.delete(extensionId)
+    this.captureTabs.delete(extensionId)
   }
 
   private ensure(extension: Electron.Extension) {
@@ -187,7 +189,7 @@ export class ExtensionPermissions {
 
   /** activeTab: the person invoked the extension on this tab. */
   grantActiveTab(extension: Electron.Extension, tabId: number, url: string | undefined) {
-    if (!this.has(extension, 'activeTab') || !url) return
+    if (!url) return
     let origin: string
     try {
       origin = new URL(url).origin
@@ -197,18 +199,28 @@ export class ExtensionPermissions {
     // about:blank, data: and browser pages have an opaque origin ('null'),
     // which every other such page shares: nothing to grant there.
     if (origin === 'null') return
-    let tabs = this.activeTabs.get(extension.id)
-    if (!tabs) this.activeTabs.set(extension.id, (tabs = new Map()))
-    tabs.set(tabId, origin)
+    // Chrome lets an extension with tabCapture capture the tab it was invoked
+    // on, with or without activeTab.
+    for (const [permission, grants] of [['activeTab', this.activeTabs], ['tabCapture', this.captureTabs]] as const) {
+      if (!this.has(extension, permission)) continue
+      let tabs = grants.get(extension.id)
+      if (!tabs) grants.set(extension.id, (tabs = new Map()))
+      tabs.set(tabId, origin)
+    }
   }
 
   hasActiveTab(extension: Electron.Extension, tabId: number) {
     return !!this.activeTabs.get(extension.id)?.has(tabId)
   }
 
+  /** tabCapture: the person invoked the extension on this tab, and it has not left for another origin. */
+  mayCaptureTab(extension: Electron.Extension, tabId: number) {
+    return !!this.captureTabs.get(extension.id)?.has(tabId)
+  }
+
   /** A tab navigated to another origin or closed: its activeTab grants end. */
   revokeActiveTab(tabId: number, newUrl?: string) {
-    for (const tabs of this.activeTabs.values()) {
+    for (const tabs of [...this.activeTabs.values(), ...this.captureTabs.values()]) {
       const origin = tabs.get(tabId)
       if (!origin) continue
       let keep = false
