@@ -2,14 +2,24 @@ import { BaseWindow, WebContentsView } from 'electron'
 import type { ElectronChromeExtensions } from '../'
 import type { ChromeExtensionImpl } from '../src/browser/impl'
 
+interface WindowState {
+  type: 'normal' | 'popup'
+  tabs: Electron.WebContents[]
+  active?: Electron.WebContents
+  /** What the tab strip shows: pinned tabs and groups. A popup has no strip. */
+  pinned: Set<number>
+  groups: Map<number, { title: string; color: string; collapsed: boolean; tabIds: number[] }>
+}
+
 /**
  * A small tabbed browser for the parity spec, built the way a real host such
  * as PeerSky is: windows hold tabs, one tab per window is shown, and the
  * extensions library is told about every tab and window through its impl.
+ * A popup window has no tab strip and holds one tab. Windows are never shown.
  */
 export class ProbeBrowser {
   extensions!: ElectronChromeExtensions
-  private windows = new Map<BaseWindow, { tabs: Electron.WebContents[]; active?: Electron.WebContents }>()
+  private windows = new Map<BaseWindow, WindowState>()
   private views = new WeakMap<Electron.WebContents, WebContentsView>()
   private closing = new WeakSet<Electron.WebContents>()
 
@@ -55,7 +65,9 @@ export class ProbeBrowser {
     })
   }
 
-  private newWindow(details: { width?: number; height?: number; left?: number; top?: number } = {}) {
+  private newWindow(
+    details: { width?: number; height?: number; left?: number; top?: number; type?: string } = {},
+  ) {
     const win = new BaseWindow({
       show: false,
       width: details.width ?? 800,
@@ -63,7 +75,12 @@ export class ProbeBrowser {
       x: details.left,
       y: details.top,
     })
-    this.windows.set(win, { tabs: [] })
+    this.windows.set(win, {
+      type: details.type === 'popup' ? 'popup' : 'normal',
+      tabs: [],
+      pinned: new Set(),
+      groups: new Map(),
+    })
     win.on('resize', () => this.layout(win))
     win.once('closed', () => {
       const state = this.windows.get(win)
@@ -111,6 +128,7 @@ export class ProbeBrowser {
       const i = state.tabs.indexOf(tab)
       if (i < 0) continue
       state.tabs.splice(i, 1)
+      state.pinned.delete(tab.id)
       const view = this.views.get(tab)
       if (view && !win.isDestroyed()) win.contentView.removeChildView(view)
       if (state.active === tab) {
@@ -150,14 +168,16 @@ export class ProbeBrowser {
   get impl(): ChromeExtensionImpl {
     return {
       createTab: async (details) => {
+        // A popup has no tab strip: a tab asked for there opens in a new window.
         const win =
-          [...this.windows.keys()].find((w) => w.id === details.windowId && !w.isDestroyed()) ??
-          this.newWindow()
+          [...this.windows.entries()].find(
+            ([w, s]) => w.id === details.windowId && !w.isDestroyed() && s.type === 'normal',
+          )?.[0] ?? this.newWindow()
         const tab = this.newTab(win, details.url, details.active !== false, details.index)
         return [tab, win]
       },
       selectTab: (tab, win) => {
-        this.show(win, tab)
+        this.show(win as BaseWindow, tab)
       },
       removeTab: (tab) => {
         if (this.closing.has(tab) || tab.isDestroyed()) return
@@ -165,11 +185,11 @@ export class ProbeBrowser {
         tab.close()
       },
       getTabIndex: (tab, win) => {
-        const i = this.windows.get(win)?.tabs.indexOf(tab) ?? -1
+        const i = this.windows.get(win as BaseWindow)?.tabs.indexOf(tab) ?? -1
         return i >= 0 ? i : undefined
       },
       moveTab: (tab, win, index) => {
-        const state = this.windows.get(win)
+        const state = this.windows.get(win as BaseWindow)
         if (!state) return undefined
         const from = state.tabs.indexOf(tab)
         if (from < 0) return undefined
@@ -178,10 +198,24 @@ export class ProbeBrowser {
         state.tabs.splice(to, 0, tab)
         return to
       },
+      pinTab: (tab, win, pinned) => {
+        const state = this.windows.get(win as BaseWindow)
+        if (!state) return
+        if (pinned) state.pinned.add(tab.id)
+        else state.pinned.delete(tab.id)
+      },
+      updateTabGroup: ({ group, tabIds, window, removed }) => {
+        const state = window && this.windows.get(window as BaseWindow)
+        if (!state) return
+        if (removed) state.groups.delete(group.id)
+        else state.groups.set(group.id, { title: group.title ?? '', color: group.color, collapsed: group.collapsed, tabIds })
+      },
       createWindow: async (details) => {
-        const win = this.newWindow(details)
+        const win = this.newWindow(details as any)
         const urls = Array.isArray(details.url) ? details.url : [details.url ?? 'about:blank']
-        urls.forEach((url, i) => {
+        // A popup shows the first page only.
+        const shown = (details as any).type === 'popup' ? urls.slice(0, 1) : urls
+        shown.forEach((url, i) => {
           const tab = this.newTab(win, url, i === 0)
           this.extensions.addTab(tab, win)
         })

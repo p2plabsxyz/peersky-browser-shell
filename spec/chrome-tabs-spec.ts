@@ -36,9 +36,11 @@ describe('chrome.tabs', () => {
   })
 
   describe('getCurrent()', () => {
-    it('gets details of the active tab', async () => {
+    // Chrome gives the tab the calling page is shown in, and nothing to a
+    // background page, which is not in a tab.
+    it('gives nothing to a background page', async () => {
       const result = await browser.crx.exec('tabs.getCurrent')
-      expect(result).to.be.an('object')
+      expect(result == null).to.equal(true)
     })
   })
 
@@ -389,25 +391,32 @@ describe('chrome.tabs', () => {
   })
 
   describe('captureVisibleTab()', () => {
-    it('returns a PNG data URL by default', async () => {
+    // Chrome's default format is JPEG.
+    it('returns a JPEG data URL by default', async () => {
       const result = await captureBrowser.crx.exec('tabs.captureVisibleTab')
+      expect(result).to.be.a('string')
+      expect(result.startsWith('data:image/jpeg;base64,')).to.equal(true)
+    })
+
+    it('returns a PNG data URL when asked', async () => {
+      const result = await captureBrowser.crx.exec('tabs.captureVisibleTab', { format: 'png' })
       expect(result).to.be.a('string')
       expect(result.startsWith('data:image/png;base64,')).to.equal(true)
     })
 
-    it('returns a JPEG data URL and clamps quality', async () => {
+    // Chrome refuses a quality outside 0 to 100 rather than clamping it.
+    it('refuses a JPEG quality out of range', async () => {
       const highQuality = await captureBrowser.crx.exec('tabs.captureVisibleTab', {
         format: 'jpeg',
         quality: 999,
       })
-      const lowQuality = await captureBrowser.crx.exec('tabs.captureVisibleTab', {
+      const inRange = await captureBrowser.crx.exec('tabs.captureVisibleTab', {
         format: 'jpeg',
-        quality: -10,
+        quality: 50,
       })
-      expect(highQuality).to.be.a('string')
-      expect(lowQuality).to.be.a('string')
-      expect(highQuality.startsWith('data:image/jpeg;base64,')).to.equal(true)
-      expect(lowQuality.startsWith('data:image/jpeg;base64,')).to.equal(true)
+      expect(highQuality == null).to.equal(true)
+      expect(inRange).to.be.a('string')
+      expect(inRange.startsWith('data:image/jpeg;base64,')).to.equal(true)
     })
 
     it('returns undefined when there is no active tracked tab', async () => {

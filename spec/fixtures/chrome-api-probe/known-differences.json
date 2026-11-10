@@ -53,32 +53,24 @@
       "reason": "Content scripts run on Electron's own chrome bindings, which the shell cannot add to, and runtime.OnLoadedReason is newer than the Chromium in Electron 43."
     },
     {
+      "path": "probe.tabs.goBack.*",
+      "reason": "Chrome starts a tabs.update navigation as the extension, so Back skips the page it left while nobody used that page; Electron can start it only from the browser, which keeps that page in Back's history."
+    },
+    {
+      "path": "probe.tabs.goForward.error",
+      "reason": "Follows from probe.tabs.goBack: the shell went back, so there is a page to go forward to."
+    },
+    {
+      "path": "probe.tabs.goForward.ok",
+      "reason": "Follows from probe.tabs.goBack: the shell went back, so there is a page to go forward to."
+    },
+    {
       "path": "probe.surface.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (216 differences)."
     },
     {
-      "path": "probe.runtime.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (7 differences)."
-    },
-    {
-      "path": "probe.tabs.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (105 differences)."
-    },
-    {
-      "path": "probe.windows.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (68 differences)."
-    },
-    {
       "path": "probe.permissions.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
-    },
-    {
-      "path": "probe.sessions.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (27 differences)."
-    },
-    {
-      "path": "probe.tabGroups.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (33 differences)."
     },
     {
       "path": "probe.tts.*",
@@ -95,14 +87,6 @@
     {
       "path": "peer.surface.*",
       "reason": "Not like Chrome yet: work for 2.0.0 in progress (22 differences)."
-    },
-    {
-      "path": "peer.tabs.fields.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (89 differences)."
-    },
-    {
-      "path": "peer.windows.*",
-      "reason": "Not like Chrome yet: work for 2.0.0 in progress (2 differences)."
     },
     {
       "path": "pages.probe.*",

@@ -1,5 +1,11 @@
 /** App-specific implementation details for extensions. */
 export interface ChromeExtensionImpl {
+  /**
+   * Open a tab. `details.windowId` is the window to open it in (-1 or none:
+   * the host's choice, such as a new window), `details.index` where in it,
+   * and `details.active` whether to show it. Extensions only ever ask for
+   * normal windows here: a popup window holds a single tab.
+   */
   createTab?(
     details: chrome.tabs.CreateProperties,
   ): Promise<[Electron.WebContents, Electron.BaseWindow]>
@@ -19,6 +25,42 @@ export interface ChromeExtensionImpl {
     activeTabId?: number,
   ): Promise<number[] | undefined> | number[] | undefined
 
+  /**
+   * An extension pinned or unpinned a tab (chrome.tabs.update). The library
+   * has already moved it, through `moveTab`, to the end of the pinned tabs or
+   * the start of the others; the host shows it pinned or not.
+   */
+  pinTab?(tab: Electron.WebContents, window: Electron.BaseWindow, pinned: boolean): void
+
+  /**
+   * An extension asked to discard a tab (chrome.tabs.discard): free its
+   * memory but keep it in the tab strip, and load it again when it is shown.
+   * Return false to keep it as it is. Without this hook the tab is only
+   * marked discarded, and its page keeps running.
+   */
+  discardTab?(tab: Electron.WebContents, window: Electron.BaseWindow): Promise<boolean> | boolean
+
+  /**
+   * A tab group was created, changed, moved or removed, or tabs joined or
+   * left it (chrome.tabs.group, chrome.tabs.ungroup, chrome.tabGroups). The
+   * host shows `group` around `tabIds`, which are in order and side by side;
+   * when `removed` is true the group is gone. The same changes are emitted on
+   * the ElectronChromeExtensions instance as 'tab-group-created',
+   * 'tab-group-updated', 'tab-group-moved' and 'tab-group-removed'.
+   */
+  updateTabGroup?(details: {
+    group: chrome.tabGroups.TabGroup
+    tabIds: number[]
+    window: Electron.BaseWindow | undefined
+    removed: boolean
+  }): void
+
+  /**
+   * Open a window. `details.type` is 'normal' or 'popup' (a window without a
+   * tab strip, holding one tab); `details.url` the pages to open in it, one
+   * tab each; `details.focused` false to open it without focus. The host
+   * adds each tab with `addTab` before it resolves.
+   */
   createWindow?(details: chrome.windows.CreateData): Promise<Electron.BaseWindow>
   removeWindow?(window: Electron.BaseWindow): void
 

@@ -36,9 +36,10 @@ describe('chrome.windows', () => {
       await closedPromise
     })
 
+    // Chrome needs a window id; WINDOW_ID_CURRENT names the current one.
     it('removes the current window', async () => {
       const closedPromise = emittedOnce(browser.window, 'closed')
-      browser.crx.exec('windows.remove')
+      browser.crx.exec('windows.remove', -2)
       await closedPromise
     })
   })

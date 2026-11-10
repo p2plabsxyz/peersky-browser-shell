@@ -28,6 +28,13 @@ export class ExtensionStore extends EventEmitter {
   tabDetailsCache = new Map<number, Partial<chrome.tabs.Tab>>()
   windowDetailsCache = new Map<number, Partial<chrome.windows.Window>>()
 
+  /**
+   * The URL each tab made by createTab was asked to open. The host starts
+   * loading before the tab is added, so chrome.tabs reads it from here to
+   * report it as pendingUrl until the page commits.
+   */
+  pendingUrls = new WeakMap<Electron.WebContents, string>()
+
   /** tabId:frameId → documentId */
   private documentIdMap = new Map<string, string>()
   /** documentId → { tabId, frameId } for chrome.scripting target.documentIds */
@@ -238,6 +245,7 @@ export class ExtensionStore extends EventEmitter {
       throw new Error('createTab must return a BrowserWindow')
     }
 
+    if (details.url) this.pendingUrls.set(tab, details.url)
     this.addTab(tab, window)
 
     return tab

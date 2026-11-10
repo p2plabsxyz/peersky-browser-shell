@@ -256,10 +256,11 @@ suite('tabs', async (t, env) => {
     const fresh = await chrome.tabs.get(sibling.id)
     return chrome.tabs.highlight({ windowId: fresh.windowId, tabs: [999] })
   })
-  // History made by the page itself, as a link click would make it.
+  // History made through the API. A page script that navigates without a
+  // user gesture makes an entry Back skips, which is about scripting, not tabs.
   const nav = await openTab(env.base + 'page?nav1')
   opened.push(nav.id)
-  await chrome.scripting.executeScript({ target: { tabId: nav.id }, func: (u) => { location.href = u }, args: [env.base + 'page?nav2'] })
+  await chrome.tabs.update(nav.id, { url: env.base + 'page?nav2' })
   await waitComplete(nav.id, env.base + 'page?nav2')
   await t.call('goBack', () => chrome.tabs.goBack(nav.id))
   t.set('goBack.url', !!(await waitComplete(nav.id, env.base + 'page?nav1')))
