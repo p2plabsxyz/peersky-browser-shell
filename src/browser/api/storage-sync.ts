@@ -5,9 +5,14 @@ import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import { isForbiddenStorageKey, readStorageFile, StorageCrypto, writeStorageFile } from './storage-file'
 
+type Area = 'sync' | 'local'
+
 export class StorageSyncAPI {
-  private baseDir: string
-  private localBaseDir: string
+  /** undefined for an in-memory session: its storage stays in memory. */
+  private dirs: Partial<Record<Area, string>> = {}
+  /** Where 1.x kept every session's storage, read once for a new session file. */
+  private legacyDirs: Record<Area, string>
+  private memory: Record<Area, Map<string, Record<string, any>>> = { sync: new Map(), local: new Map() }
   private ready: Promise<void>
   private localReady: Promise<void>
   private chainSync = new Map<string, Promise<unknown>>()
@@ -15,10 +20,24 @@ export class StorageSyncAPI {
   private crypto: StorageCrypto = safeStorage
 
   constructor(private ctx: ExtensionContext) {
-    this.baseDir = path.join(app.getPath('userData'), 'extension-sync')
-    this.localBaseDir = path.join(app.getPath('userData'), 'extension-local')
-    this.ready = fs.mkdir(this.baseDir, { recursive: true, mode: 0o700 }).then(() => {})
-    this.localReady = fs.mkdir(this.localBaseDir, { recursive: true, mode: 0o700 }).then(() => {})
+    // Each session keeps extension storage in its own data folder, so two
+    // profiles never share it, and an in-memory (private) session never
+    // writes it to disk.
+    const storagePath = (ctx.session as any)?.storagePath as string | null | undefined
+    this.legacyDirs = {
+      sync: path.join(app.getPath('userData'), 'extension-sync'),
+      local: path.join(app.getPath('userData'), 'extension-local'),
+    }
+    if (storagePath) {
+      this.dirs = {
+        sync: path.join(storagePath, 'extension-sync'),
+        local: path.join(storagePath, 'extension-local'),
+      }
+    }
+    const mkdir = (dir?: string) =>
+      dir ? fs.mkdir(dir, { recursive: true, mode: 0o700 }).then(() => {}) : Promise.resolve()
+    this.ready = mkdir(this.dirs.sync)
+    this.localReady = mkdir(this.dirs.local)
 
     const handle = this.ctx.router.apiHandler()
     handle('storage.sync.get', this.get, { permission: 'storage' })
@@ -48,22 +67,48 @@ export class StorageSyncAPI {
     return next
   }
 
-  private getFilePath = (extensionId: string) => {
-    return path.join(this.baseDir, `${extensionId}.json`)
+  private filePath(area: Area, extensionId: string) {
+    const dir = this.dirs[area]
+    return dir ? path.join(dir, `${extensionId}.json`) : undefined
   }
 
-  private getLocalFilePath = (extensionId: string) => {
-    return path.join(this.localBaseDir, `${extensionId}.json`)
+  private async readArea(area: Area, extensionId: string): Promise<Record<string, any>> {
+    const file = this.filePath(area, extensionId)
+    if (!file) {
+      return structuredClone(this.memory[area].get(extensionId) ?? {})
+    }
+    try {
+      await fs.access(file)
+    } catch {
+      // No file for this session yet: start from what 1.x kept, if anything.
+      const legacy = path.join(this.legacyDirs[area], `${extensionId}.json`)
+      try {
+        await fs.access(legacy)
+      } catch {
+        return {}
+      }
+      return readStorageFile(legacy, this.crypto, area)
+    }
+    return readStorageFile(file, this.crypto, area)
+  }
+
+  private async writeArea(area: Area, extensionId: string, data: Record<string, any>) {
+    const file = this.filePath(area, extensionId)
+    if (!file) {
+      this.memory[area].set(extensionId, structuredClone(data))
+      return
+    }
+    await writeStorageFile(file, data, this.crypto)
   }
 
   private load = async (extensionId: string): Promise<Record<string, any>> => {
     await this.ready
-    return readStorageFile(this.getFilePath(extensionId), this.crypto, 'sync')
+    return this.readArea('sync', extensionId)
   }
 
   private save = async (extensionId: string, data: Record<string, any>) => {
     await this.ready
-    await writeStorageFile(this.getFilePath(extensionId), data, this.crypto)
+    await this.writeArea('sync', extensionId, data)
   }
 
   private get = async (event: ExtensionEvent, keys?: string | string[] | Record<string, any> | null) => {
@@ -185,12 +230,12 @@ export class StorageSyncAPI {
 
   private localLoad = async (extensionId: string): Promise<Record<string, any>> => {
     await this.localReady
-    return readStorageFile(this.getLocalFilePath(extensionId), this.crypto, 'local')
+    return this.readArea('local', extensionId)
   }
 
   private localSave = async (extensionId: string, data: Record<string, any>) => {
     await this.localReady
-    await writeStorageFile(this.getLocalFilePath(extensionId), data, this.crypto)
+    await this.writeArea('local', extensionId, data)
   }
 
   private localGet = async ({ extension }: ExtensionEvent, keys?: string | string[] | Record<string, any> | null) => {

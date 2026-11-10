@@ -16,18 +16,32 @@ type StateStoreOptions = {
 const sanitizeName = (input: string) =>
   input.replace(/[^a-z0-9._-]+/gi, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '') || 'default'
 
+const STATE_FILENAME = 'chrome-extension-api-state.json'
+
 export class ExtensionStateStore {
-  private filePath: string
+  /** undefined: an in-memory session, whose state is never written. */
+  private filePath?: string
+  /** Where 1.x kept every session's state, read once if filePath is new. */
+  private legacyPath?: string
   private state: StatePayload = { schemaVersion: STATE_SCHEMA_VERSION, namespaces: {} }
   private dirty = false
   private hydrated = false
   private hydratePromise?: Promise<void>
 
   constructor(private session: Electron.Session, opts: StateStoreOptions = {}) {
-    const baseDir = opts.baseDir || path.join(app.getPath('userData'), 'chrome-extension-api-state')
-    const partition = (session as any)?.partition || 'default'
-    const filename = `${sanitizeName(partition)}.json`
-    this.filePath = path.join(baseDir, filename)
+    if (opts.baseDir) {
+      const partition = (session as any)?.partition || 'default'
+      this.filePath = path.join(opts.baseDir, `${sanitizeName(partition)}.json`)
+      return
+    }
+    // Each session keeps its state in its own data folder, so two profiles
+    // never share alarms, grants or downloads. A session without a folder is
+    // in memory, like an incognito one, and so is its state.
+    const storagePath = (session as any)?.storagePath as string | null | undefined
+    if (storagePath) {
+      this.filePath = path.join(storagePath, STATE_FILENAME)
+      this.legacyPath = path.join(app.getPath('userData'), 'chrome-extension-api-state', 'default.json')
+    }
   }
 
   async hydrate() {
@@ -42,11 +56,20 @@ export class ExtensionStateStore {
     if (this.hydrated) return
     this.hydrated = true
 
+    if (!this.filePath) return
+
     let raw: string
     try {
       raw = await fs.readFile(this.filePath, 'utf8')
     } catch {
-      return
+      // Nothing here yet: take over what 1.x kept for every session, once.
+      if (!this.legacyPath) return
+      try {
+        raw = await fs.readFile(this.legacyPath, 'utf8')
+        this.dirty = true
+      } catch {
+        return
+      }
     }
 
     try {
@@ -83,7 +106,7 @@ export class ExtensionStateStore {
   }
 
   async flush() {
-    if (!this.dirty) return
+    if (!this.dirty || !this.filePath) return
     await fs.mkdir(path.dirname(this.filePath), { recursive: true })
     await fs.writeFile(this.filePath, JSON.stringify(this.state, null, 2), 'utf8')
     this.dirty = false
