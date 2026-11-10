@@ -419,6 +419,7 @@ export class OmniboxAPI {
   private nextRequestId = 1
   private pending = new Map<string, Pending>()
   private saveTimer?: NodeJS.Timeout
+  private queues = new Map<string, Promise<void>>()
 
   constructor(private ctx: ExtensionContext) {
     const handle = this.ctx.router.apiHandler()
@@ -503,9 +504,37 @@ export class OmniboxAPI {
     pending.resolve(suggestions)
   }
 
+  /**
+   * Sends an event, in order, once the extension's worker can take it. Right
+   * after an extension loads, its worker adds its listeners while it is still
+   * installing; the router's delivery then fails to start it and holds every
+   * event back for 30 seconds. Waiting until the worker starts avoids that.
+   */
   private send(extensionId: string, eventName: string, args: any[]) {
-    // The worker may not be running: it starts, adds its listener, and gets the event then.
-    this.ctx.router.sendEventWhenListening(extensionId, eventName, args, 10_000)
+    const previous = this.queues.get(extensionId) ?? Promise.resolve()
+    const next = previous
+      .then(() => this.whenWorkerReady(extensionId))
+      .then(() => this.ctx.router.sendEventWhenListening(extensionId, eventName, args, 10_000))
+      .catch(() => {})
+    this.queues.set(extensionId, next)
+    void next.then(() => {
+      if (this.queues.get(extensionId) === next) this.queues.delete(extensionId)
+    })
+  }
+
+  private async whenWorkerReady(extensionId: string) {
+    const background = (this.extension(extensionId)?.manifest as any)?.background
+    const workers = (this.ctx.session as any).serviceWorkers
+    if (!background?.service_worker || typeof workers?.startWorkerForScope !== 'function') return
+    for (let tries = 0; tries < 20; tries++) {
+      try {
+        // Returns at once for a running worker.
+        await workers.startWorkerForScope(`chrome-extension://${extensionId}/`)
+        return
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 250))
+      }
+    }
   }
 
   private checkHostExtension(extensionId: string) {

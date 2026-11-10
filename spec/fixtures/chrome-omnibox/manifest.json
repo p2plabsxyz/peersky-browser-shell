@@ -1,0 +1,11 @@
+{
+  "name": "chrome-omnibox",
+  "version": "1.0",
+  "manifest_version": 3,
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "omnibox": {
+    "keyword": "omni"
+  }
+}

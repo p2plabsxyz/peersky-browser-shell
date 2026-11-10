@@ -1,5 +1,10 @@
 import { expect } from 'chai'
-import { EventEmitter } from 'node:events'
+import { session } from 'electron'
+import { EventEmitter, once } from 'node:events'
+import * as path from 'node:path'
+
+import { ElectronChromeExtensions } from '../'
+import { uuid } from './spec-helpers'
 
 import { BookmarksAPI } from '../src/browser/api/bookmarks'
 import { HistoryAPI } from '../src/browser/api/history'
@@ -446,7 +451,9 @@ describe('chrome.bookmarks, history, topSites, readingList, search and omnibox',
         { extensionId: 'kw', keyword: 'kw', name: 'kw' },
         { extensionId: 'kw2', keyword: 'two', name: 'kw2' },
       ])
+      const tick = () => new Promise((r) => setTimeout(r, 0))
       const pending = api.inputChanged('kw', 'hello')
+      await tick()
       const [text, requestId] = events[0].args
       expect([events[0].name, text]).to.deep.equal(['omnibox.onInputChanged', 'hello'])
       // Another extension cannot answer it, and a stale request id is dropped.
@@ -465,6 +472,7 @@ describe('chrome.bookmarks, history, topSites, readingList, search and omnibox',
       ])
       expect(await api.inputChanged('kw', 'late', 10)).to.deep.equal([])
       api.inputEntered('kw', 'hello world', 'newForegroundTab')
+      await tick()
       expect(store.gestures).to.deep.equal(['kw'])
       expect(events[events.length - 1]).to.deep.equal({ id: 'kw', name: 'omnibox.onInputEntered', args: ['hello world', 'newForegroundTab'] })
       expect(() => api.inputEntered('kw', 'x', 'sideways' as any)).to.throw('Unknown disposition')
@@ -484,6 +492,64 @@ describe('chrome.bookmarks, history, topSites, readingList, search and omnibox',
         description: 'Search %s',
         descriptionStyles: [{ type: 'match', offset: 7, length: 2 }],
       })
+    })
+  })
+
+  describe('omnibox, end to end with a service worker', () => {
+    let ses: Electron.Session
+    let extensions: ElectronChromeExtensions
+    let extension: Electron.Extension
+
+    before(async () => {
+      ses = session.fromPartition(`persist:omnibox-${uuid()}`)
+      extensions = new ElectronChromeExtensions({ license: 'internal-license-do-not-use' as any, session: ses })
+      extension = await (ses.extensions || ses).loadExtension(path.join(__dirname, 'fixtures', 'chrome-omnibox'))
+    })
+
+    const told = async (action: () => void) => {
+      const heard = once(extensions, 'omnibox-default-suggestion')
+      action()
+      const [info] = (await heard) as any[]
+      return info.description
+    }
+
+    // Driven right after the extension loads, before its worker can start.
+    it('drives the extension from the host, as an address bar would', async function () {
+      this.timeout(30_000)
+      expect(extensions.getOmniboxKeywords()).to.deep.equal([
+        { extensionId: extension.id, keyword: 'omni', name: 'chrome-omnibox' },
+      ])
+      expect(await told(() => extensions.omniboxInputStarted(extension.id))).to.equal('started')
+      const suggestions = await extensions.omniboxInputChanged(extension.id, 'cats', { timeoutMs: 10_000 })
+      expect(suggestions).to.deep.equal([
+        {
+          content: 'cats one',
+          description: 'First cats',
+          descriptionStyles: [{ type: 'match', offset: 6, length: 4 }],
+          deletable: false,
+        },
+        {
+          content: 'cats two',
+          description: 'Second',
+          descriptionStyles: [{ type: 'dim', offset: 0, length: 6 }],
+          deletable: true,
+        },
+      ])
+      expect(await told(() => extensions.omniboxInputEntered(extension.id, 'cats one', 'newForegroundTab'))).to.equal(
+        'entered cats one newForegroundTab',
+      )
+      expect(await told(() => extensions.omniboxDeleteSuggestion(extension.id, 'cats two'))).to.equal('deleted cats two')
+      expect(await told(() => extensions.omniboxInputCancelled(extension.id))).to.equal('cancelled')
+      expect((await extensions.getOmniboxDefaultSuggestion(extension.id))?.description).to.equal('cancelled')
+    })
+
+    it("throws Chrome's invocation error in the worker when suggest gets a bad suggestion", async () => {
+      const heard = once(extensions, 'omnibox-default-suggestion')
+      expect(await extensions.omniboxInputChanged(extension.id, 'bad', { timeoutMs: 1000 })).to.deep.equal([])
+      const [info] = (await heard) as any[]
+      expect(info.description).to.equal(
+        "threw Error in invocation of omnibox.sendSuggestions(integer requestId, array suggestResults): Error at parameter 'suggestResults': Error at index 0: Missing required property 'content'.",
+      )
     })
   })
 })
