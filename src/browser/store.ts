@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, webContents } from 'electron'
+import { BaseWindow, BrowserWindow, dialog, webContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { ContextMenuType } from './api/common'
@@ -11,6 +11,14 @@ export interface DeclarativeActionState {
   /** SetIcon matches: PNG data URLs by size in pixels, from the highest priority rule. */
   icon?: Record<string, string>
 }
+
+/** A window, not the webContents some hosts hand back next to it. */
+const isWindowLike = (value: unknown): value is Electron.BaseWindow =>
+  value instanceof BaseWindow ||
+  (!!value &&
+    typeof (value as any).isDestroyed === 'function' &&
+    typeof (value as any).getBounds === 'function' &&
+    typeof (value as any).executeJavaScript !== 'function')
 
 export class ExtensionStore extends EventEmitter {
   /** Tabs observed by the extensions system. */
@@ -175,6 +183,11 @@ export class ExtensionStore extends EventEmitter {
 
   addWindow(window: Electron.BaseWindow) {
     if (this.windows.has(window)) return
+    // Anything else here (an array, say) breaks every windows.* call for
+    // every extension.
+    if (!window || Array.isArray(window) || typeof (window as any).isDestroyed !== 'function') {
+      throw new TypeError('addWindow expects a BrowserWindow or BaseWindow')
+    }
 
     this.windows.add(window)
 
@@ -190,7 +203,14 @@ export class ExtensionStore extends EventEmitter {
       throw new Error('createWindow is not implemented')
     }
 
-    const win = await this.impl.createWindow(details)
+    const result: unknown = await this.impl.createWindow(details)
+    // Some hosts answer as createTab does, with [webContents, window].
+    const win = (
+      Array.isArray(result) ? result.find((item) => item instanceof BaseWindow) ?? result.find(isWindowLike) : result
+    ) as Electron.BaseWindow | undefined
+    if (!win || Array.isArray(win) || typeof (win as any).isDestroyed !== 'function') {
+      throw new Error('createWindow must return a BrowserWindow or BaseWindow')
+    }
 
     this.addWindow(win)
 
