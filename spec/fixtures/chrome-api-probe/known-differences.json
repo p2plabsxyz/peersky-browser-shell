@@ -1,0 +1,196 @@
+{
+  "differences": [
+    {
+      "path": "probe.surface.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (216 differences)."
+    },
+    {
+      "path": "probe.runtime.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (7 differences)."
+    },
+    {
+      "path": "probe.storage.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (28 differences)."
+    },
+    {
+      "path": "probe.alarms.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (6 differences)."
+    },
+    {
+      "path": "probe.tabs.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (105 differences)."
+    },
+    {
+      "path": "probe.windows.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (68 differences)."
+    },
+    {
+      "path": "probe.action.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (17 differences)."
+    },
+    {
+      "path": "probe.contextMenus.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (12 differences)."
+    },
+    {
+      "path": "probe.notifications.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
+    },
+    {
+      "path": "probe.cookies.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (36 differences)."
+    },
+    {
+      "path": "probe.permissions.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
+    },
+    {
+      "path": "probe.management.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (26 differences)."
+    },
+    {
+      "path": "probe.scripting.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (44 differences)."
+    },
+    {
+      "path": "probe.webNavigation.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (41 differences)."
+    },
+    {
+      "path": "probe.webRequest.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (361 differences)."
+    },
+    {
+      "path": "probe.declarativeNetRequest.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (19 differences)."
+    },
+    {
+      "path": "probe.downloads.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (40 differences)."
+    },
+    {
+      "path": "probe.bookmarks.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (129 differences)."
+    },
+    {
+      "path": "probe.history.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (44 differences)."
+    },
+    {
+      "path": "probe.topSites.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
+    },
+    {
+      "path": "probe.sessions.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (27 differences)."
+    },
+    {
+      "path": "probe.tabGroups.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (33 differences)."
+    },
+    {
+      "path": "probe.browsingData.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (59 differences)."
+    },
+    {
+      "path": "probe.contentSettings.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (25 differences)."
+    },
+    {
+      "path": "probe.fontSettings.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (30 differences)."
+    },
+    {
+      "path": "probe.privacy.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (56 differences)."
+    },
+    {
+      "path": "probe.proxy.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
+    },
+    {
+      "path": "probe.search.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (4 differences)."
+    },
+    {
+      "path": "probe.omnibox.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (3 differences)."
+    },
+    {
+      "path": "probe.readingList.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (19 differences)."
+    },
+    {
+      "path": "probe.tts.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (9 differences)."
+    },
+    {
+      "path": "probe.offscreen.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (49 differences)."
+    },
+    {
+      "path": "probe.sidePanel.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (1 differences)."
+    },
+    {
+      "path": "probe.commands.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (7 differences)."
+    },
+    {
+      "path": "probe.identity.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
+    },
+    {
+      "path": "probe.debugger.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (6 differences)."
+    },
+    {
+      "path": "probe.capture.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
+    },
+    {
+      "path": "probe.userScripts.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (14 differences)."
+    },
+    {
+      "path": "probe.declarativeContent.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (16 differences)."
+    },
+    {
+      "path": "probe.extension.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (1 differences)."
+    },
+    {
+      "path": "probe.contentScript.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (14 differences)."
+    },
+    {
+      "path": "probe.management.toggle.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (8 differences)."
+    },
+    {
+      "path": "peer.surface.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (22 differences)."
+    },
+    {
+      "path": "peer.tabs.fields.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (89 differences)."
+    },
+    {
+      "path": "peer.windows.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (2 differences)."
+    },
+    {
+      "path": "peer.management.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (4 differences)."
+    },
+    {
+      "path": "pages.probe.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (218 differences)."
+    },
+    {
+      "path": "pages.peer.*",
+      "reason": "Not like Chrome yet: work for 2.0.0 in progress (23 differences)."
+    }
+  ]
+}

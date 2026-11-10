@@ -1,0 +1,131 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extName__",
+  "description": "Calls every chrome.* API and records what it does, to compare the shell with Chrome.",
+  "version": "1.0",
+  "default_locale": "en",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAr6iVZS5+saKKa9AhCaZ45pArlGoygmMvHRtA55CA7OEZDX7r40GuBTOQEJxq43UHYGIEDEwEsDPXKrZrACl6DaulMrz40pbAkOZoaud5D8R5RfW+9uZPh3nHBrykY8OYuL/2SxkOLf0Dq0Y4QF38nZzlpTA88otQw/ixvnFxSqsIFh1SkC3O23bockkTKTN0Cmo78EoxXMM5MeFGS3Kg3TJmD+BjAgObLFtyR/diBGtzpAutkug1rEfxA6CTm5/wJkk6VbCBUCnwLd2vP3MeDGJVu7aRGY/gG8ztfIvhu4k9EmX60J6095IYRY7FiOrlVj57mchPQOeVXd9Nn77xFQIDAQAB",
+  "icons": {
+    "16": "icon.png"
+  },
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "action": {
+    "default_title": "Probe",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png"
+    }
+  },
+  "options_page": "options.html",
+  "side_panel": {
+    "default_path": "panel.html"
+  },
+  "omnibox": {
+    "keyword": "probe"
+  },
+  "commands": {
+    "run-probe": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+Y"
+      },
+      "description": "Run the probe"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://127.0.0.1/*"
+      ],
+      "js": [
+        "probe-lib.js",
+        "content.js"
+      ],
+      "run_at": "document_end"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "icon.png",
+        "redirected.txt"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "ruleset_1",
+        "enabled": false,
+        "path": "rules.json"
+      }
+    ]
+  },
+  "permissions": [
+    "activeTab",
+    "alarms",
+    "bookmarks",
+    "browsingData",
+    "clipboardRead",
+    "clipboardWrite",
+    "contentSettings",
+    "contextMenus",
+    "cookies",
+    "debugger",
+    "declarativeContent",
+    "declarativeNetRequest",
+    "declarativeNetRequestFeedback",
+    "declarativeNetRequestWithHostAccess",
+    "desktopCapture",
+    "downloads",
+    "downloads.open",
+    "downloads.ui",
+    "favicon",
+    "fontSettings",
+    "geolocation",
+    "history",
+    "identity",
+    "idle",
+    "management",
+    "nativeMessaging",
+    "notifications",
+    "offscreen",
+    "pageCapture",
+    "power",
+    "privacy",
+    "proxy",
+    "readingList",
+    "scripting",
+    "search",
+    "sessions",
+    "sidePanel",
+    "storage",
+    "system.cpu",
+    "system.display",
+    "system.memory",
+    "system.storage",
+    "tabCapture",
+    "tabGroups",
+    "tabs",
+    "topSites",
+    "tts",
+    "unlimitedStorage",
+    "userScripts",
+    "webNavigation",
+    "webRequest",
+    "webRequestAuthProvider"
+  ],
+  "optional_permissions": [
+    "printerProvider"
+  ],
+  "optional_host_permissions": [
+    "https://optional.example/*"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ]
+}
