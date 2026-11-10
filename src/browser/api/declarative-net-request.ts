@@ -1,3 +1,4 @@
+import { app } from 'electron'
 import { promises as fs, existsSync } from 'node:fs'
 import path from 'node:path'
 
@@ -707,8 +708,9 @@ export class DeclarativeNetRequestAPI {
     state.staticByRuleset.clear()
     state.rulesetIds = resources.map((r) => r?.id).filter((id): id is string => typeof id === 'string')
 
-    if (saved?.enabledRulesets) {
-      for (const id of saved.enabledRulesets) state.enabledRulesets.add(id)
+    const legacy = saved?.enabledRulesets ? undefined : await this.legacyEnabledRulesets(extension.id)
+    if (saved?.enabledRulesets || legacy) {
+      for (const id of saved?.enabledRulesets ?? legacy ?? []) state.enabledRulesets.add(id)
     } else {
       for (const res of resources) if (res?.enabled) state.enabledRulesets.add(res.id)
     }
@@ -724,6 +726,7 @@ export class DeclarativeNetRequestAPI {
     for (const id of [...state.enabledRulesets]) {
       if (!resources.some((r) => r?.id === id)) state.enabledRulesets.delete(id)
     }
+    if (legacy) this.persist(extension.id)
 
     for (const res of resources) {
       if (!res || typeof res.path !== 'string') continue
@@ -750,6 +753,18 @@ export class DeclarativeNetRequestAPI {
       }
     }
     this.rebuildGlobalIndexes()
+  }
+
+  /** Rulesets an earlier version kept enabled in a file of its own, read once. */
+  private async legacyEnabledRulesets(extensionId: string): Promise<string[] | undefined> {
+    if (!this.ctx.stateStore || !(this.ctx.session as any)?.storagePath) return undefined
+    try {
+      const file = path.join(app.getPath('userData'), 'DNR Extension Rules', extensionId, 'enabled_rulesets.json')
+      const parsed = JSON.parse(await fs.readFile(file, 'utf8'))
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string').slice(0, 100) : undefined
+    } catch {
+      return undefined
+    }
   }
 
   private isStaticRuleDisabled(state: ExtensionDNRState, rule: InternalRule): boolean {
