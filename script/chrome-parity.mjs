@@ -3,7 +3,10 @@
 // chrome.* call did, into spec/fixtures/chrome-api-probe/chrome-results.json.
 // The parity spec runs the same extensions in the shell and compares.
 //
-//   CHROME=/path/to/chrome node script/chrome-parity.mjs
+//   CHROME=/path/to/chrome node script/chrome-parity.mjs [out.json] [--only=tabs,peer.windows]
+//
+// --only records just those suites (probe suites by name, peer suites as
+// peer.<name>, the page surfaces as pages) and keeps the rest of the file.
 //
 // Use Chrome for Testing or Chromium: branded Chrome no longer loads unpacked
 // extensions from the command line. Chrome runs headless with a new profile in
@@ -23,7 +26,11 @@ const { normalizeResults } = require(path.join(root, 'spec', 'probe-compare.js')
 const PROBE_ID = 'agiecahclpmfdifoehacoelbdlhkclph'
 const PEER_ID = 'hkcielgkpfgoamfdbknpndcmhjjgljab'
 const fixtures = path.join(root, 'spec', 'fixtures')
-const outFile = process.argv[2] || path.join(fixtures, 'chrome-api-probe', 'chrome-results.json')
+const positional = process.argv.slice(2).filter((a) => !a.startsWith('--'))
+const outFile = positional[0] || path.join(fixtures, 'chrome-api-probe', 'chrome-results.json')
+const onlyArg = process.argv.find((a) => a.startsWith('--only='))
+const only = onlyArg ? new Set(onlyArg.slice('--only='.length).split(',')) : null
+const wanted = (name) => !only || only.has(name)
 
 const chromePath = process.env.CHROME
 if (!chromePath || !existsSync(chromePath)) {
@@ -161,18 +168,18 @@ async function main() {
     const peerSuites = await cdp.evaluate(peerSw, 'suiteNames()')
     console.log('probe')
     for (const suite of probeSuites) {
-      if (suite === 'management.toggle') continue
+      if (suite === 'management.toggle' || !wanted(suite)) continue
       out.probe[suite] = await run(probeSw, suite)
     }
     console.log('peer')
-    for (const suite of peerSuites) out.peer[suite] = await run(peerSw, suite)
+    for (const suite of peerSuites) if (wanted(`peer.${suite}`)) out.peer[suite] = await run(peerSw, suite)
     console.log('pages')
-    for (const [name, id] of [['probe', PROBE_ID], ['peer', PEER_ID]]) {
+    for (const [name, id] of wanted('pages') ? [['probe', PROBE_ID], ['peer', PEER_ID]] : []) {
       const page = await openPage(cdp, `chrome-extension://${id}/page.html`)
       out.pages[name] = await cdp.evaluate(page.sessionId, 'pageSurface()')
       await cdp.send('Target.closeTarget', { targetId: page.targetId })
     }
-    if (probeSuites.includes('management.toggle')) {
+    if (probeSuites.includes('management.toggle') && wanted('management.toggle')) {
       out.probe['management.toggle'] = await run(probeSw, 'management.toggle')
     }
   } finally {
@@ -182,7 +189,15 @@ async function main() {
     await sleep(500)
     rmSync(work, { recursive: true, force: true })
   }
-  writeFileSync(outFile, JSON.stringify(normalizeResults(out, env), null, 2) + '\n')
+  let result = normalizeResults(out, env)
+  if (only && existsSync(outFile)) {
+    // Keep what was recorded before for every suite not run this time.
+    const before = JSON.parse(readFileSync(outFile, 'utf8'))
+    for (const side of ['probe', 'peer', 'pages']) {
+      result[side] = { ...before[side], ...result[side] }
+    }
+  }
+  writeFileSync(outFile, JSON.stringify(result, null, 2) + '\n')
   console.log(`wrote ${path.relative(process.cwd(), outFile)} (${out.browser})`)
 }
 
