@@ -1,5 +1,5 @@
 import { expect } from 'chai'
-import { app, BrowserWindow, session } from 'electron'
+import { app, BaseWindow, BrowserWindow, session } from 'electron'
 import * as fs from 'node:fs'
 import * as os from 'node:os'
 import * as path from 'node:path'
@@ -108,6 +108,16 @@ describe('chrome.* APIs match Chrome', function () {
 
   it('pages: the peer page sees the same APIs', async () => {
     compare('pages', 'peer', await peerPage.webContents.executeJavaScript('pageSurface()'))
+  })
+
+  it('an offscreen document is no window, so it never keeps the app from quitting', async () => {
+    const windowsBefore = BaseWindow.getAllWindows().length
+    await probePage.webContents.executeJavaScript(
+      `chrome.offscreen.createDocument({ url: 'offscreen.html', reasons: ['DOM_PARSER'], justification: 'test' })`,
+    )
+    expect(await probePage.webContents.executeJavaScript('chrome.offscreen.hasDocument()')).to.equal(true)
+    expect(BaseWindow.getAllWindows().length).to.equal(windowsBefore)
+    await probePage.webContents.executeJavaScript('chrome.offscreen.closeDocument()')
   })
 
   it('probe: management.toggle', async () => {

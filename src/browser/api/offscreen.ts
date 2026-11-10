@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain } from 'electron'
+import { ipcMain, WebContentsView } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
@@ -61,8 +61,18 @@ const listenForContextInfo = () => {
   })
 }
 
+const gone = (doc: OffscreenDocument) => doc.view.webContents.isDestroyed()
+const close = (doc: OffscreenDocument) => {
+  if (!gone(doc)) doc.view.webContents.close()
+}
+
 interface OffscreenDocument {
-  win: BrowserWindow
+  /**
+   * The document's page, in a view that is in no window: a hidden window
+   * would still count as one, and keep a host that quits when its last window
+   * closes from quitting.
+   */
+  view: WebContentsView
   contextId: string
   documentId: string
   reasons: string[]
@@ -93,7 +103,7 @@ export class OffscreenAPI {
   /** Offscreen documents, as runtime.getContexts() reports them. */
   getContexts(extensionId: string) {
     const doc = this.documents.get(extensionId)
-    if (!doc || doc.win.isDestroyed()) return []
+    if (!doc || gone(doc)) return []
     return [
       {
         contextType: 'OFFSCREEN_DOCUMENT',
@@ -101,7 +111,7 @@ export class OffscreenAPI {
         tabId: -1,
         windowId: -1,
         documentId: doc.documentId,
-        documentUrl: doc.win.webContents.getURL(),
+        documentUrl: doc.view.webContents.getURL(),
         documentOrigin: `chrome-extension://${extensionId}`,
         frameId: 0,
         incognito: false,
@@ -112,7 +122,7 @@ export class OffscreenAPI {
   private closeFor(extensionId: string) {
     const doc = this.documents.get(extensionId)
     this.documents.delete(extensionId)
-    if (doc && !doc.win.isDestroyed()) doc.win.destroy()
+    if (doc) close(doc)
   }
 
   /** Checks the arguments as Chrome's bindings do, with their messages. */
@@ -165,54 +175,53 @@ export class OffscreenAPI {
     const href = this.resolveUrl(extensionId, url)
 
     const existing = this.documents.get(extensionId)
-    if (existing && !existing.win.isDestroyed()) {
+    if (existing && !gone(existing)) {
       // Chrome rejects a second document rather than replacing the first.
       throw new Error('Only a single offscreen document may be created.')
     }
 
-    const win = new BrowserWindow({
-      show: false,
+    const view = new WebContentsView({
       webPreferences: {
         session: this.ctx.session,
         sandbox: true,
         nodeIntegration: false,
         nodeIntegrationInWorker: false,
         contextIsolation: true,
-        // A hidden window is throttled by default, which would stall whatever
-        // the document was created to run.
+        // A page nobody sees is throttled by default, which would stall
+        // whatever the document was created to run.
         backgroundThrottling: false,
       },
     })
-    const id = win.webContents.id
+    const id = view.webContents.id
     // Known before the page's preload asks.
     offscreenContents.add(id)
-    win.webContents.once('destroyed', () => offscreenContents.delete(id))
-    win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+    view.webContents.once('destroyed', () => offscreenContents.delete(id))
+    view.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
 
     const doc: OffscreenDocument = {
-      win,
+      view,
       contextId: randomUUID(),
       documentId: randomUUID().replace(/-/g, '').toUpperCase(),
       reasons,
       justification,
     }
     this.documents.set(extensionId, doc)
-    win.once('closed', () => {
+    view.webContents.once('destroyed', () => {
       if (this.documents.get(extensionId) === doc) this.documents.delete(extensionId)
     })
 
     try {
-      await win.webContents.loadURL(href)
+      await view.webContents.loadURL(href)
     } catch {
       if (this.documents.get(extensionId) === doc) this.documents.delete(extensionId)
-      if (!win.isDestroyed()) win.destroy()
+      close(doc)
       throw new Error('Page failed to load.')
     }
   }
 
   private closeDocument = async (event: ExtensionEvent) => {
     const doc = this.documents.get(event.extension.id)
-    if (!doc || doc.win.isDestroyed()) {
+    if (!doc || gone(doc)) {
       this.documents.delete(event.extension.id)
       throw new Error('No current offscreen document.')
     }
@@ -221,14 +230,12 @@ export class OffscreenAPI {
 
   private hasDocument = (event: ExtensionEvent) => {
     const doc = this.documents.get(event.extension.id)
-    return !!doc && !doc.win.isDestroyed()
+    return !!doc && !gone(doc)
   }
 
   /** Tear down every offscreen document, for session shutdown. */
   destroy() {
-    for (const doc of this.documents.values()) {
-      if (!doc.win.isDestroyed()) doc.win.destroy()
-    }
+    for (const doc of this.documents.values()) close(doc)
     this.documents.clear()
   }
 }
