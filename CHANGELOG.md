@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-09 (@p2plabs/peersky-chrome-extensions)
+
+Versions of this fork follow their own numbers; the entries from 4.0.0 down are upstream electron-chrome-extensions.
+
+Extensions now behave as in Chrome 157. Two test extensions were run in Chrome for Testing and the shell gives the same answers, checked on every test run, apart from the differences listed with their reasons in `spec/fixtures/chrome-api-probe/known-differences.json`.
+
+### Breaking
+
+- Calls that fail reject, or set `chrome.runtime.lastError`, with Chrome's message. They used to resolve with nothing.
+- An API is there only for an extension that asks for its permission, and the main process checks every call and every event listener against the permissions the extension holds.
+- A tab's url, title and favicon reach an extension only with `tabs`, host access to the page or activeTab. `tabs.captureVisibleTab` needs `<all_urls>` or activeTab and gives JPEG by default.
+- `permissions.request` needs a user gesture and asks the person (the `requestPermissions` hook, or a system dialog); it used to grant everything without asking.
+- Extension state and `chrome.storage` live in the session's own folder. 1.x data under userData is read once.
+- `ChromeExtensionImpl.createWindow` may return the window or `[webContents, window]`.
+- Electron 43 or later.
+
+### Added
+
+- `chrome.bookmarks`, `history`, `topSites`, `readingList`, `search`, `omnibox`, `sessions`, `tabGroups`, `browsingData`, `contentSettings`, `fontSettings`, `tts`, `pageCapture`, `tabCapture`, `desktopCapture`, `declarativeContent` and a real `chrome.privacy`.
+- `runtime.onInstalled`, `onStartup`, `onExtensionLoaded` and `onEnabled` fire as in Chrome. On the first run after updating from 1.x, an extension that already stored data gets `chrome_update`, not `install`.
+- activeTab, granted by a toolbar click, a context menu item, a shortcut or the omnibox.
+- Optional host hooks for everything only the host can do, each with a safe default (see `src/browser/impl.ts` and the README).
+
+### Fixed
+
+- Calling `chrome.system.cpu`, `memory`, `display` or `storage` crashed the browser.
+- `removeListener` never removed a listener.
+- Events sent right after an extension loaded could be dropped for 30 seconds.
+- Host permission patterns could be passed by a URL carrying the host in its path or query, and a pattern full of stars could stall the main process.
+- Extensions shared one isolated world for injected scripts and could read each other's globals.
+- An extension could listen to events of APIs it had no permission for.
+- An offscreen document kept a host that quits with its last window from quitting.
+- A worker lost the shell's APIs when another extension loaded or unloaded.
+
 ## [4.0.0] - 2024-10-22
 
 ### Added
