@@ -8,7 +8,7 @@ import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import { matchesAnyPattern } from '../match-pattern'
 import { resolveExtensionPath } from './common'
-import { GuardedRegExp, RegexBudget, mayBacktrackBadly, newRegexBudget } from './lib/guarded-regexp'
+import { execGuarded, mayBacktrackBadly, testEachGuarded } from './lib/guarded-regexp'
 import {
   chromeUrlFilterHostKeyForIndex,
   matchDeclarativeNetRequestUrlFilter,
@@ -27,7 +27,14 @@ interface InternalRule {
   /** Raw Chrome `urlFilter` string (MV3 semantics — not ABP). */
   urlFilter: string | null
   isUrlFilterCaseSensitive: boolean
-  regex: Pick<RegExp, 'test' | 'exec'> | null
+  regex: RegExp | null
+  /**
+   * The pattern could backtrack for long (lib/guarded-regexp.ts): it is
+   * tested under a time limit, together with the request's other such rules.
+   */
+  riskyRegex?: boolean
+  /** Its pattern took too long once: the rule matches nothing any more. */
+  regexHung?: boolean
   condition: RuleCondition
   /** Static ruleset this rule was loaded from, or '_dynamic' / '_session'. */
   rulesetId?: string
@@ -492,26 +499,18 @@ function validateRule(rule: any): DNRRule {
   return JSON.parse(JSON.stringify(rule))
 }
 
-// Regex time per extension, for the rules whose patterns could backtrack for long.
-const regexBudgets = new Map<string, RegexBudget>()
-
 function compileRule(extensionId: string, rule: DNRRule, rulesetId?: string): InternalRule | null {
   const c = rule.condition || {}
   let urlFilter: string | null = null
-  let regex: InternalRule['regex'] = null
+  let regex: RegExp | null = null
+  let riskyRegex = false
   let hostKey: string | null = null
   if (typeof c.regexFilter === 'string' && c.regexFilter) {
     try {
-      const re = new RegExp(c.regexFilter, (c as any).isUrlFilterCaseSensitive ? '' : 'i')
+      regex = new RegExp(c.regexFilter, (c as any).isUrlFilterCaseSensitive ? '' : 'i')
       // Chrome's RE2 matches in linear time; JavaScript's engine can take
       // minutes on a pattern like (a+)+$, on every request, in the main process.
-      if (mayBacktrackBadly(c.regexFilter)) {
-        let budget = regexBudgets.get(extensionId)
-        if (!budget) regexBudgets.set(extensionId, (budget = newRegexBudget()))
-        regex = new GuardedRegExp(re, budget, 'declarativeNetRequest')
-      } else {
-        regex = re
-      }
+      riskyRegex = mayBacktrackBadly(c.regexFilter)
     } catch {
       return null
     }
@@ -528,6 +527,7 @@ function compileRule(extensionId: string, rule: DNRRule, rulesetId?: string): In
     urlFilter,
     isUrlFilterCaseSensitive: !!(c as { isUrlFilterCaseSensitive?: boolean }).isUrlFilterCaseSensitive,
     regex,
+    riskyRegex,
     condition: c,
     rulesetId,
   }
@@ -867,6 +867,35 @@ export class DeclarativeNetRequestAPI {
     return true
   }
 
+  /**
+   * The rules among `candidates` whose patterns could backtrack for long and
+   * match `url`, tested together under one time limit. A rule whose pattern
+   * takes too long by itself stops matching, and says so once; every other
+   * rule keeps matching, however busy the page is.
+   */
+  private testRiskyRegexes(candidates: InternalRule[], url: string): Set<InternalRule> {
+    const risky = candidates.filter((r) => r.regex && r.riskyRegex && !r.regexHung)
+    const matches = new Set<InternalRule>()
+    if (risky.length === 0) return matches
+    const results = testEachGuarded(
+      risky.map((r) => r.regex!),
+      url,
+      (index) => this.regexHung(risky[index]),
+    )
+    results.forEach((matched, index) => {
+      if (matched) matches.add(risky[index])
+    })
+    return matches
+  }
+
+  private regexHung(rule: InternalRule) {
+    if (rule.regexHung) return
+    rule.regexHung = true
+    console.warn(
+      `declarativeNetRequest: rule ${rule.id} of extension ${rule.extensionId} took too long to match; it is no longer used`,
+    )
+  }
+
   /** The best rule of each extension for a request: the one Chrome would apply. */
   private matchRequest(
     details: WebRequestDetails,
@@ -881,11 +910,14 @@ export class DeclarativeNetRequestAPI {
     }
     const best = new Map<string, InternalRule>()
     const headers: InternalRule[] = []
-    for (const r of this.candidateRulesForUrl(details.url)) {
+    const candidates = this.candidateRulesForUrl(details.url)
+    const riskyMatches = this.testRiskyRegexes(candidates, details.url)
+    for (const r of candidates) {
       if (opts.only && r.extensionId !== opts.only) continue
       // Chrome never lets one extension's rules touch another's requests.
       if (shouldSkipCrossExtensionDeclarativeAction(details.initiator, r.extensionId)) continue
-      if (!conditionMatchesRequest(r.condition, probe, r.urlFilter, r.isUrlFilterCaseSensitive, r.regex)) continue
+      const regex = r.regex && (r.riskyRegex ? { test: () => riskyMatches.has(r) } : r.regex)
+      if (!conditionMatchesRequest(r.condition, probe, r.urlFilter, r.isUrlFilterCaseSensitive, regex)) continue
       if (!this.mayAct(r, probe)) continue
       if (r.action.type === 'modifyHeaders') {
         if (opts.includeHeaders) headers.push(r)
@@ -1015,7 +1047,11 @@ export class DeclarativeNetRequestAPI {
           return { redirectUrl: `chrome-extension://${rule.extensionId}${red.extensionPath}` }
         }
         if ((red as any).regexSubstitution && rule.regex) {
-          const m = rule.regex.exec(requestUrl)
+          const m = rule.riskyRegex ? execGuarded(rule.regex, requestUrl) : rule.regex.exec(requestUrl)
+          if (m === undefined) {
+            this.regexHung(rule)
+            return null
+          }
           if (m) {
             const target = String((red as any).regexSubstitution).replace(/\\(\d)/g, (_s, n) => m[Number(n)] ?? '')
             try {

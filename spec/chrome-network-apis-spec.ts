@@ -234,7 +234,7 @@ describe('network and page APIs', () => {
       }
     })
 
-    it('a declarativeNetRequest rule cannot hold up the browser', async () => {
+    it('a declarativeNetRequest rule cannot hold up the browser, and no other rule stops blocking', async () => {
       const blocker = extension('dnr-regex', { permissions: ['declarativeNetRequest'] })
       const h = makeCtx({ extensions: [blocker] })
       const dnr = new DeclarativeNetRequestAPI(h.ctx)
@@ -242,14 +242,22 @@ describe('network and page APIs', () => {
         addRules: [
           { id: 1, action: { type: 'block' }, condition: { regexFilter: '^https?://[^/]+/(a+)+$' } },
           { id: 2, action: { type: 'block' }, condition: { regexFilter: '^https?://ads\\.example/' } },
+          { id: 3, action: { type: 'block' }, condition: { regexFilter: '^https?://(?:[a-z0-9-]+\\.)+tracker\\.example/' } },
         ],
       })
+      const request = (url: string) => dnr.evaluateOnBeforeRequest({ url, method: 'GET', tabId: 1, type: 'xmlhttprequest' } as any)
       const started = Date.now()
-      const url = `https://site.example/${'a'.repeat(40)}!`
-      expect(dnr.evaluateOnBeforeRequest({ url, method: 'GET', tabId: 1, type: 'xmlhttprequest' } as any)).to.equal(null)
+      expect(request(`https://site.example/${'a'.repeat(40)}!`)).to.equal(null)
       expect(Date.now() - started).to.be.lessThan(1000)
-      // Plain patterns still match.
-      expect(dnr.evaluateOnBeforeRequest({ url: 'https://ads.example/x', method: 'GET', tabId: 1, type: 'xmlhttprequest' } as any)).to.deep.equal({ cancel: true })
+      // The rule that hung is out; the others, a pattern like it among them,
+      // keep blocking however many requests come.
+      for (let i = 0; i < 3000; i++) {
+        expect(request(`https://cdn${i}.tracker.example/p.js`)).to.deep.equal({ cancel: true })
+      }
+      expect(request('https://ads.example/x')).to.deep.equal({ cancel: true })
+      const again = Date.now()
+      expect(request(`https://site.example/${'a'.repeat(40)}!`)).to.equal(null)
+      expect(Date.now() - again).to.be.lessThan(50)
     })
   })
 

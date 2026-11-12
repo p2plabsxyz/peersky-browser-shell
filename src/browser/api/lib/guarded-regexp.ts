@@ -13,6 +13,57 @@ const REGEX_WINDOW_MS = 10_000
 const regexContext = vm.createContext({})
 const testScript = new vm.Script('__re.test(__input)')
 const execScript = new vm.Script('__re.exec(__input)')
+const batchScript = new vm.Script('__list.map((re) => re.test(__input))')
+
+/** The time one input may take across all the patterns tested together. */
+const BATCH_TIMEOUT_MS = 100
+
+/**
+ * Tests patterns on one input under one time limit: a guarded call costs about
+ * a tenth of a millisecond whatever it runs, so a request pays it once, not
+ * once per pattern. Nothing is skipped to save time: when the limit is hit,
+ * each pattern is tried alone, and only one that takes too long by itself is
+ * reported to onHang (it matches nothing from then on, as its caller decides).
+ */
+export function testEachGuarded(list: readonly RegExp[], input: string, onHang: (index: number) => void): boolean[] {
+  if (list.length === 0) return []
+  const ctx = regexContext as any
+  try {
+    ctx.__list = list
+    ctx.__input = input
+    const results = batchScript.runInContext(regexContext, { timeout: BATCH_TIMEOUT_MS }) as boolean[]
+    return list.map((_re, index) => results[index] === true)
+  } catch {
+    return list.map((re, index) => {
+      ctx.__re = re
+      try {
+        return testScript.runInContext(regexContext, { timeout: REGEX_TIMEOUT_MS }) === true
+      } catch {
+        onHang(index)
+        return false
+      }
+    })
+  } finally {
+    ctx.__list = undefined
+    ctx.__input = undefined
+    ctx.__re = undefined
+  }
+}
+
+/** RegExp#exec under the time limit; undefined when the pattern took too long. */
+export function execGuarded(re: RegExp, input: string): RegExpExecArray | null | undefined {
+  const ctx = regexContext as any
+  ctx.__re = re
+  ctx.__input = input
+  try {
+    return (execScript.runInContext(regexContext, { timeout: REGEX_TIMEOUT_MS }) as RegExpExecArray | null) ?? null
+  } catch {
+    return undefined
+  } finally {
+    ctx.__re = undefined
+    ctx.__input = undefined
+  }
+}
 
 /** How much regex time one extension has used. */
 export interface RegexBudget {
