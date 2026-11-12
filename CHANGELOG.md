@@ -39,6 +39,7 @@ Extensions now behave as in Chrome 157. Two test extensions were run in Chrome f
 - `chrome.debugger` could reach past the tab it was attached to: other targets, the host's windows, other extensions' pages and workers, local files and any site's data. It now has only the DevTools commands Chrome allows an extension, the tab's own frames and workers, and a redirect into another extension's page detaches it.
 - An extension with `webRequest` could answer for another extension's blocking listener and so cancel or redirect any request.
 - A `declarativeNetRequest` rule's or `downloads.search` regular expression could hold up the main process.
+- Each event for an extension's service worker first asked Chromium to start it, so a busy page's requests queued behind those calls, about 90 ms each with a blocking webRequest listener such as an ad blocker's. Events now go straight to a worker that runs.
 - `removeListener` never removed a listener.
 - Events sent right after an extension loaded could be dropped for 30 seconds.
 - Host permission patterns could be passed by a URL carrying the host in its path or query, and a pattern full of stars could stall the main process.

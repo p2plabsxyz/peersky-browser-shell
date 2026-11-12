@@ -399,6 +399,16 @@ export class ExtensionRouter {
 
   private extensionWorkers: Set<any> = new Set()
 
+  /**
+   * Each extension's service worker while Chromium says it runs, by extension
+   * id. An event goes straight to it: asking startWorkerForScope for every
+   * event and every listener cost a trip to the worker thread each time, and
+   * a page's burst of webRequest events queued behind those trips, about
+   * 90 ms a request on a busy page. A worker that is not running is still
+   * started by scope, so no event is dropped.
+   */
+  private runningWorkers: Map<string, Electron.ServiceWorkerMain> = new Map()
+
   constructor(
     public session: Electron.Session,
     private delegate: RoutingDelegate = RoutingDelegate.get(),
@@ -420,6 +430,22 @@ export class ExtensionRouter {
     session.serviceWorkers.on(
       'running-status-changed' as any,
       ({ runningStatus, versionId }: any) => {
+        if (runningStatus === 'running') {
+          const running = (session as any).serviceWorkers.getWorkerFromVersionID(versionId)
+          const scope: string = running?.scope || ''
+          if (scope.startsWith('chrome-extension://')) {
+            try {
+              this.runningWorkers.set(new URL(scope).hostname, running)
+            } catch {}
+          }
+          return
+        }
+        if (runningStatus === 'stopping' || runningStatus === 'stopped') {
+          for (const [extensionId, worker] of this.runningWorkers) {
+            if ((worker as any).versionId === versionId) this.runningWorkers.delete(extensionId)
+          }
+          return
+        }
         if (runningStatus !== 'starting') return
 
         const serviceWorker = (session as any).serviceWorkers.getWorkerFromVersionID(versionId)
@@ -680,6 +706,23 @@ export class ExtensionRouter {
   ) {
     if (listener.type === 'service-worker') {
       const argsCopy = [...args]
+      const running = this.runningWorkers.get(extensionId)
+      if (running && !(running as any).isDestroyed?.()) {
+        const send = () => {
+          try {
+            if ((running as any).isDestroyed?.()) throw new Error('worker is gone')
+            running.send(ipcName, ...argsCopy)
+          } catch (err) {
+            // Stopped since: start it by scope, as for any worker not running.
+            d('send %s to the running worker failed: %o', ipcName, err)
+            this.runningWorkers.delete(extensionId)
+            this.deliverToServiceWorkerOrHost(listener, extensionId, ipcName, argsCopy, 0)
+          }
+        }
+        if (delayMs > 0) setTimeout(send, delayMs)
+        else send()
+        return
+      }
       void this.startExtensionWorker(extensionId, ipcName).then((serviceWorker) => {
         if (!serviceWorker) return
         const send = () => {
