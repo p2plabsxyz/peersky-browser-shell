@@ -1,11 +1,13 @@
 import { nativeImage } from 'electron'
 import { promises as fs } from 'node:fs'
 import { BlockList, isIP } from 'node:net'
-import vm from 'node:vm'
 import debug from 'debug'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import { TabContents, validateExtensionResource } from './common'
+import { GuardedRegExp, RegexBudget, newRegexBudget } from './lib/guarded-regexp'
+
+export { newRegexBudget }
 
 const d = debug('electron-chrome-extensions:declarativeContent')
 
@@ -37,14 +39,8 @@ const CSS_WATCH_WORLD = 1999
 // not keep a call open forever.
 const CSS_WATCH_MAX_WAIT_MS = 30_000
 
-// urlMatches runs an extension's regular expression in the main process. Chrome
-// uses RE2, which cannot backtrack; JavaScript's engine can, without end. Each
-// test runs under a time limit, and each extension has a budget of regex time
-// per window: past it, its expressions match nothing until the next window. An
-// expression that hits the limit once turns them all off for good.
-const REGEX_TIMEOUT_MS = 50
-const REGEX_BUDGET_MS = 200
-const REGEX_WINDOW_MS = 10_000
+// urlMatches runs an extension's regular expression in the main process,
+// under a time limit (lib/guarded-regexp.ts).
 
 const INJECTABLE_SCHEMES = new Set(['http:', 'https:', 'file:', 'ftp:'])
 
@@ -73,55 +69,6 @@ const LIST_CRITERIA = new Set(['schemes', 'ports', 'cidrBlocks'])
 
 const DEFAULT_PORTS: Record<string, number> = { 'http:': 80, 'https:': 443, 'ws:': 80, 'wss:': 443, 'ftp:': 21 }
 
-const regexContext = vm.createContext({})
-const regexScript = new vm.Script('__re.test(__input)')
-
-/** How much regex time one extension has used. */
-export interface RegexBudget {
-  windowStart: number
-  spentMs: number
-  dead: boolean
-}
-
-export const newRegexBudget = (): RegexBudget => ({ windowStart: Date.now(), spentMs: 0, dead: false })
-
-/** A regular expression from an extension, tested under a time limit. */
-class GuardedRegExp {
-  constructor(
-    private re: RegExp,
-    private budget: RegexBudget,
-  ) {}
-
-  test(input: string) {
-    const budget = this.budget
-    if (budget.dead) return false
-    const now = Date.now()
-    if (now - budget.windowStart > REGEX_WINDOW_MS) {
-      budget.windowStart = now
-      budget.spentMs = 0
-    }
-    const left = REGEX_BUDGET_MS - budget.spentMs
-    if (left <= 0) return false
-    const ctx = regexContext as any
-    ctx.__re = this.re
-    ctx.__input = input
-    const started = process.hrtime.bigint()
-    try {
-      return regexScript.runInContext(regexContext, { timeout: Math.max(1, Math.min(REGEX_TIMEOUT_MS, Math.ceil(left))) }) === true
-    } catch {
-      if (left >= REGEX_TIMEOUT_MS) {
-        budget.dead = true
-        console.warn(`declarativeContent: the regular expression ${this.re.source} took too long; this extension's are no longer tested`)
-      }
-      return false
-    } finally {
-      budget.spentMs += Number(process.hrtime.bigint() - started) / 1e6
-      ctx.__re = undefined
-      ctx.__input = undefined
-    }
-  }
-}
-
 /**
  * Compiles a pattern the way Chrome's RE2 reads it, with RE2's wording for the
  * failures. JavaScript reads most RE2 patterns the same; the few RE2 refuses
@@ -143,7 +90,7 @@ function compileRegExp(pattern: string, budget: RegexBudget): GuardedRegExp {
     source = source.slice(inline[0].length)
   }
   try {
-    return new GuardedRegExp(new RegExp(source, flags), budget)
+    return new GuardedRegExp(new RegExp(source, flags), budget, 'declarativeContent')
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e)
     if (/Unterminated group/.test(message)) fail(`missing ): ${pattern}`)

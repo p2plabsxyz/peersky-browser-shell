@@ -12,6 +12,7 @@ import { ScriptingAPI } from '../src/browser/api/scripting'
 import { UserScriptsAPI } from '../src/browser/api/user-scripts'
 import { WebRequestAPI } from '../src/browser/api/web-request'
 import { ExtensionPermissions } from '../src/browser/permissions'
+import { mayBacktrackBadly } from '../src/browser/api/lib/guarded-regexp'
 
 // Unit specs for the network and page APIs: the security rules and the
 // state kept across restarts, which the parity probe cannot reach.
@@ -217,6 +218,37 @@ describe('network and page APIs', () => {
       await respond(blocker, id, {})
       await respond(blocker, id, { cancel: true })
       expect(await pending).to.deep.equal({})
+    })
+  })
+
+  // Chrome's RE2 cannot backtrack; JavaScript's engine can, for minutes, in
+  // the main process, on every request.
+  describe('regular expressions from extensions', () => {
+    it('tells the patterns that could backtrack for long', () => {
+      for (const risky of ['^https?://[^/]+/(a+)+$', '(a|aa)*$', '([a-z0-9]+)*x', '(?:[a-z]+\\.)+example\\.com', '.*a.*b.*c.*d', '((ab)*)+']) {
+        expect(mayBacktrackBadly(risky), risky).to.equal(true)
+      }
+      for (const plain of ['^https?://ads\\.example\\.com/', '^https?://[^/]+/[a-z]+\\.js$', '(a|b)?c', '[(+*]+x', '(abc){2}', '\\(a+\\)+', '^https://(www\\.)?example\\.com/.*']) {
+        expect(mayBacktrackBadly(plain), plain).to.equal(false)
+      }
+    })
+
+    it('a declarativeNetRequest rule cannot hold up the browser', async () => {
+      const blocker = extension('dnr-regex', { permissions: ['declarativeNetRequest'] })
+      const h = makeCtx({ extensions: [blocker] })
+      const dnr = new DeclarativeNetRequestAPI(h.ctx)
+      await h.call('declarativeNetRequest.updateDynamicRules', blocker, {
+        addRules: [
+          { id: 1, action: { type: 'block' }, condition: { regexFilter: '^https?://[^/]+/(a+)+$' } },
+          { id: 2, action: { type: 'block' }, condition: { regexFilter: '^https?://ads\\.example/' } },
+        ],
+      })
+      const started = Date.now()
+      const url = `https://site.example/${'a'.repeat(40)}!`
+      expect(dnr.evaluateOnBeforeRequest({ url, method: 'GET', tabId: 1, type: 'xmlhttprequest' } as any)).to.equal(null)
+      expect(Date.now() - started).to.be.lessThan(1000)
+      // Plain patterns still match.
+      expect(dnr.evaluateOnBeforeRequest({ url: 'https://ads.example/x', method: 'GET', tabId: 1, type: 'xmlhttprequest' } as any)).to.deep.equal({ cancel: true })
     })
   })
 

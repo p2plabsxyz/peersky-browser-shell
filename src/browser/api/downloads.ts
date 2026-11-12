@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
+import { GuardedRegExp, newRegexBudget } from './lib/guarded-regexp'
 
 /**
  * chrome.downloads
@@ -653,11 +654,14 @@ export class DownloadsAPI {
     await this.restoreReady
     if (!query || typeof query !== 'object') throw new Error(ERRORS.invalidFilter)
     const q = query as Record<string, any>
+    // Tested under a time limit: a pattern that backtracks without end would
+    // hold up the whole browser (lib/guarded-regexp.ts).
+    const budget = newRegexBudget()
     const regex = (key: string) => {
       if (q[key] === undefined) return undefined
       if (typeof q[key] !== 'string' || q[key].length > 1000) throw new Error(`Invalid ${key}`)
       try {
-        return new RegExp(q[key])
+        return new GuardedRegExp(new RegExp(q[key]), budget, 'downloads')
       } catch {
         throw new Error(`Invalid ${key}`)
       }

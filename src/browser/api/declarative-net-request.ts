@@ -8,6 +8,7 @@ import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import { matchesAnyPattern } from '../match-pattern'
 import { resolveExtensionPath } from './common'
+import { GuardedRegExp, RegexBudget, mayBacktrackBadly, newRegexBudget } from './lib/guarded-regexp'
 import {
   chromeUrlFilterHostKeyForIndex,
   matchDeclarativeNetRequestUrlFilter,
@@ -26,7 +27,7 @@ interface InternalRule {
   /** Raw Chrome `urlFilter` string (MV3 semantics — not ABP). */
   urlFilter: string | null
   isUrlFilterCaseSensitive: boolean
-  regex: RegExp | null
+  regex: Pick<RegExp, 'test' | 'exec'> | null
   condition: RuleCondition
   /** Static ruleset this rule was loaded from, or '_dynamic' / '_session'. */
   rulesetId?: string
@@ -234,7 +235,7 @@ function conditionMatchesRequest(
   },
   urlFilter: string | null,
   isUrlFilterCaseSensitive: boolean,
-  regex: RegExp | null,
+  regex: Pick<RegExp, 'test'> | null,
 ): boolean {
   if (!dnrResourceTypeMatches(condition, details.type)) return false
 
@@ -491,14 +492,26 @@ function validateRule(rule: any): DNRRule {
   return JSON.parse(JSON.stringify(rule))
 }
 
+// Regex time per extension, for the rules whose patterns could backtrack for long.
+const regexBudgets = new Map<string, RegexBudget>()
+
 function compileRule(extensionId: string, rule: DNRRule, rulesetId?: string): InternalRule | null {
   const c = rule.condition || {}
   let urlFilter: string | null = null
-  let regex: RegExp | null = null
+  let regex: InternalRule['regex'] = null
   let hostKey: string | null = null
   if (typeof c.regexFilter === 'string' && c.regexFilter) {
     try {
-      regex = new RegExp(c.regexFilter, (c as any).isUrlFilterCaseSensitive ? '' : 'i')
+      const re = new RegExp(c.regexFilter, (c as any).isUrlFilterCaseSensitive ? '' : 'i')
+      // Chrome's RE2 matches in linear time; JavaScript's engine can take
+      // minutes on a pattern like (a+)+$, on every request, in the main process.
+      if (mayBacktrackBadly(c.regexFilter)) {
+        let budget = regexBudgets.get(extensionId)
+        if (!budget) regexBudgets.set(extensionId, (budget = newRegexBudget()))
+        regex = new GuardedRegExp(re, budget, 'declarativeNetRequest')
+      } else {
+        regex = re
+      }
     } catch {
       return null
     }
