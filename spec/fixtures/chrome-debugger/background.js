@@ -41,6 +41,16 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       break
     }
 
+    // A call's result and its runtime.lastError, which 'api' leaves out.
+    case 'api-detail': {
+      const { method, args } = message
+      const [apiName, subMethod] = method.split('.')
+      chrome[apiName][subMethod](...args, (result) => {
+        reply({ result, error: chrome.runtime.lastError ? chrome.runtime.lastError.message : null })
+      })
+      break
+    }
+
     case 'event-once': {
       const { name } = message
       const [apiName, eventName] = name.split('.')

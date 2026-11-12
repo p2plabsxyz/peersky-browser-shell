@@ -1,0 +1,6 @@
+{
+  "name": "web-accessible-page",
+  "version": "1.0",
+  "manifest_version": 3,
+  "web_accessible_resources": [{ "resources": ["page.html"], "matches": ["<all_urls>"] }]
+}

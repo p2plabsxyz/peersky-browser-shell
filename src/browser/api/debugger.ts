@@ -10,38 +10,96 @@ const d = debug('electron-chrome-extensions:debugger')
  *
  * An extension attaches to tabs only: never to the host's own windows, to
  * browser pages, to local files without file access, or to another
- * extension's pages. A tab that navigates to such a page is detached. The
- * DevTools commands that reach past the page (the browser itself, other
- * targets, the file system) are refused, as Chrome refuses them for
- * extensions.
+ * extension's pages. A tab or one of its frames that goes to such a page is
+ * detached, on a redirect too.
+ *
+ * Electron's debugger client is a trusted one: through it a page's session
+ * could list every target and attach to the host's windows and other
+ * extensions' workers, read local files and clear any origin's data. So each
+ * command is checked here as Chrome checks an extension's client: only the
+ * domains Chrome lists for chrome.debugger, only the page's own frames and
+ * workers through Target, and only the page's own origin where a command
+ * names one.
  */
 
 const SUPPORTED_VERSIONS = new Set(['1.0', '1.1', '1.2', '1.3'])
 
-/** Commands Chrome does not let an extension's debugger client run. */
-const BLOCKED_METHODS = new Set([
-  'Target.attachToBrowserTarget',
-  'Target.createBrowserContext',
-  'Target.disposeBrowserContext',
-  'Target.exposeDevToolsProtocol',
-  'Target.setRemoteLocations',
-  'Target.setDiscoverTargets',
-  'Target.getBrowserContexts',
-  'Page.setDownloadBehavior',
-  'Storage.getCookies',
-  'Storage.setCookies',
-  'Storage.clearCookies',
+/** The DevTools domains Chrome lets an extension use (developer.chrome.com/docs/extensions/reference/api/debugger). */
+const ALLOWED_DOMAINS = new Set([
+  'Accessibility',
+  'Audits',
+  'CacheStorage',
+  'Console',
+  'CSS',
+  'Database',
+  'Debugger',
+  'DOM',
+  'DOMDebugger',
+  'DOMSnapshot',
+  'Emulation',
+  'Fetch',
+  'IO',
+  'Input',
+  'Inspector',
+  'Log',
+  'Network',
+  'Overlay',
+  'Page',
+  'Performance',
+  'Profiler',
+  'Runtime',
+  'Storage',
+  'Target',
+  'WebAudio',
+  'WebAuthn',
 ])
-const BLOCKED_DOMAINS = ['Browser.', 'SystemInfo.', 'Tethering.', 'Extensions.', 'PWA.', 'Cast.']
+
+/**
+ * Commands in those domains that reach past the page: the whole browser's
+ * cookies and cache, downloads to disk, and fetches the browser makes itself.
+ * Tracing, in Chrome's list too, is left out: Electron's records every process.
+ */
+const BLOCKED_METHODS = new Set([
+  'Page.setDownloadBehavior',
+  'Network.getAllCookies',
+  'Network.clearBrowserCookies',
+  'Network.clearBrowserCache',
+  'Network.loadNetworkResource',
+])
+
+/** Through Target an extension only auto-attaches the page's own frames and workers, as in Chrome. */
+const TARGET_METHODS = new Set(['Target.setAutoAttach', 'Target.detachFromTarget'])
+
+/** Storage commands allowed, each for the page's own origin only. */
+const STORAGE_METHODS = new Set([
+  'Storage.getStorageKeyForFrame',
+  'Storage.clearDataForOrigin',
+  'Storage.clearDataForStorageKey',
+  'Storage.getUsageAndQuota',
+  'Storage.trackCacheStorageForOrigin',
+  'Storage.untrackCacheStorageForOrigin',
+  'Storage.trackCacheStorageForStorageKey',
+  'Storage.untrackCacheStorageForStorageKey',
+  'Storage.trackIndexedDBForOrigin',
+  'Storage.untrackIndexedDBForOrigin',
+  'Storage.trackIndexedDBForStorageKey',
+  'Storage.untrackIndexedDBForStorageKey',
+])
+
+/** Network commands that name cookies' sites: the extension needs host access to each. */
+const COOKIE_METHODS = new Set(['Network.getCookies', 'Network.setCookie', 'Network.setCookies', 'Network.deleteCookies'])
 
 /** Schemes of web content a debugger may see. Everything else is the browser's own. */
 const OPEN_SCHEMES = new Set(['http:', 'https:', 'ws:', 'wss:', 'data:', 'blob:', 'about:', 'ftp:'])
 
 type Attachment = {
   tabId: number
+  /** Child sessions of the page's own frames and workers, by session id: their target id. */
+  sessions: Map<string, string>
   onDetach: (event: Electron.Event, reason: string) => void
-  onMessage: (event: Electron.Event, method: string, params: object, sessionId?: string) => void
+  onMessage: (event: Electron.Event, method: string, params: any, sessionId?: string) => void
   onNavigate: (details: Electron.Event<Electron.WebContentsDidStartNavigationEventParams>) => void
+  onCommitted: (event: Electron.Event, url: string) => void
   onDestroyed: () => void
 }
 
@@ -143,8 +201,20 @@ export class DebuggerAPI {
       if (sessionId) out.sessionId = sessionId
       return out
     }
+    const leave = () => {
+      // The tab is going somewhere the extension may not debug.
+      if (this.release(tabId, { detach: true })) {
+        this.ctx.router.sendEvent(extensionId, 'debugger.onDetach', source(), 'target_closed')
+      }
+    }
+    const sessions = new Map<string, string>()
+    const dropSession = (sessionId: string) => {
+      sessions.delete(sessionId)
+      tab.debugger.sendCommand('Target.detachFromTarget', { sessionId }).catch(() => {})
+    }
     const entry: Attachment = {
       tabId,
+      sessions,
       onDetach: (_event, reason) => {
         // Electron says "target closed" or "Render process gone."; Chrome has two reasons.
         const chromeReason = /closed|gone|crash/i.test(String(reason)) ? 'target_closed' : 'canceled_by_user'
@@ -154,15 +224,36 @@ export class DebuggerAPI {
         }
       },
       onMessage: (_event, method, params, sessionId) => {
+        // Nothing from a session the extension was not given.
+        if (sessionId && !sessions.has(sessionId)) return
+        if (method === 'Target.attachedToTarget') {
+          const child = params?.sessionId
+          const info = params?.targetInfo || {}
+          if (typeof child !== 'string') return
+          // A frame or worker of another extension, or of the browser, stays out of reach.
+          if (this.refusal(extension, String(info.url ?? '')) || !['iframe', 'worker', 'shared_worker', 'service_worker', 'page'].includes(info.type)) {
+            dropSession(child)
+            return
+          }
+          sessions.set(child, String(info.targetId ?? ''))
+        } else if (method === 'Target.detachedFromTarget') {
+          if (typeof params?.sessionId === 'string') sessions.delete(params.sessionId)
+        } else if (method === 'Target.targetInfoChanged') {
+          const info = params?.targetInfo || {}
+          const child = [...sessions].find(([, targetId]) => targetId && targetId === info.targetId)?.[0]
+          if (child && this.refusal(extension, String(info.url ?? ''))) {
+            dropSession(child)
+            return
+          }
+        }
         this.ctx.router.sendEvent(extensionId, 'debugger.onEvent', source(sessionId), method, params)
       },
       onNavigate: (details) => {
         if (!details.isMainFrame || details.isSameDocument) return
-        if (!this.refusal(extension, details.url)) return
-        // The tab is going somewhere the extension may not debug.
-        if (this.release(tabId, { detach: true })) {
-          this.ctx.router.sendEvent(extensionId, 'debugger.onDetach', source(), 'target_closed')
-        }
+        if (this.refusal(extension, details.url)) leave()
+      },
+      onCommitted: (_event, url) => {
+        if (this.refusal(extension, url)) leave()
       },
       onDestroyed: () => {
         if (this.release(tabId, { detach: false })) {
@@ -183,6 +274,9 @@ export class DebuggerAPI {
     tab.debugger.on('detach', entry.onDetach)
     tab.debugger.on('message', entry.onMessage)
     tab.on('did-start-navigation', entry.onNavigate)
+    // A redirect can take an allowed address somewhere refused.
+    tab.on('did-redirect-navigation', entry.onNavigate)
+    tab.on('did-navigate', entry.onCommitted)
     tab.once('destroyed', entry.onDestroyed)
     this.attached.set(tabId, { extensionId, entry })
     d(`extension ${extensionId} attached debugger to tab ${tabId}`)
@@ -198,6 +292,8 @@ export class DebuggerAPI {
       tab.debugger.removeListener('detach', current.entry.onDetach)
       tab.debugger.removeListener('message', current.entry.onMessage)
       tab.removeListener('did-start-navigation', current.entry.onNavigate)
+      tab.removeListener('did-redirect-navigation', current.entry.onNavigate)
+      tab.removeListener('did-navigate', current.entry.onCommitted)
       tab.removeListener('destroyed', current.entry.onDestroyed)
       if (opts.detach) {
         try {
@@ -258,6 +354,76 @@ export class DebuggerAPI {
     return new Error(JSON.stringify({ code, message }))
   }
 
+  /** Refuses a command Chrome refuses an extension's client, as a protocol error. */
+  private checkCommand(
+    extension: Electron.Extension,
+    tab: Electron.WebContents,
+    method: string,
+    params: Record<string, any>,
+  ) {
+    const domain = method.split('.')[0]
+    if (!ALLOWED_DOMAINS.has(domain) || BLOCKED_METHODS.has(method)) {
+      throw this.protocolError(`'${method}' wasn't found`)
+    }
+    if (domain === 'Target') {
+      if (!TARGET_METHODS.has(method)) throw this.protocolError('Not allowed')
+      if (method === 'Target.setAutoAttach' && params.flatten !== true) {
+        throw this.protocolError('Only flatten protocol is supported with chrome.debugger')
+      }
+      if (method === 'Target.detachFromTarget') {
+        const current = this.attached.get(tab.id)
+        if (typeof params.sessionId !== 'string' || !current?.entry.sessions.has(params.sessionId)) {
+          throw this.protocolError('Session with given id not found.')
+        }
+      }
+      return
+    }
+    if (method === 'DOM.setFileInputFiles' && !this.ctx.permissions.hasHostAccess(extension, 'file:///')) {
+      // Chrome lets only an extension with file access put local files in a page.
+      throw this.protocolError('Not allowed')
+    }
+    if (domain === 'Storage' || domain === 'CacheStorage') {
+      if (domain === 'Storage' && !STORAGE_METHODS.has(method)) throw this.protocolError('Not allowed')
+      let origin: string
+      try {
+        origin = new URL(tab.getURL()).origin
+      } catch {
+        throw this.protocolError('Not allowed')
+      }
+      const named = [params.origin, params.securityOrigin, params.storageKey, params.cacheId].filter(
+        (value) => value !== undefined,
+      )
+      const own = (value: unknown) =>
+        typeof value === 'string' &&
+        origin !== 'null' &&
+        (value === origin || value.startsWith(`${origin}/`) || value.startsWith(`${origin}|`))
+      if (named.some((value) => !own(value))) throw this.protocolError('Not allowed')
+      if (domain === 'CacheStorage' && named.length === 0 && method !== 'CacheStorage.requestCacheNames') {
+        throw this.protocolError('Not allowed')
+      }
+      return
+    }
+    if (COOKIE_METHODS.has(method)) {
+      const urls: string[] = []
+      const add = (cookie: any) => {
+        if (typeof cookie?.url === 'string') urls.push(cookie.url)
+        else if (typeof cookie?.domain === 'string') urls.push(`https://${cookie.domain.replace(/^\./, '')}/`)
+      }
+      if (method === 'Network.getCookies') {
+        for (const url of Array.isArray(params.urls) ? params.urls : []) urls.push(String(url))
+      } else if (method === 'Network.setCookies') {
+        for (const cookie of Array.isArray(params.cookies) ? params.cookies : []) add(cookie)
+        if (urls.length !== (Array.isArray(params.cookies) ? params.cookies.length : 0)) throw this.protocolError('Not allowed')
+      } else {
+        add(params)
+        if (urls.length === 0) throw this.protocolError('Not allowed')
+      }
+      if (urls.some((url) => !this.ctx.permissions.hasHostAccess(extension, url))) {
+        throw this.protocolError('Not allowed')
+      }
+    }
+  }
+
   private sendCommand = async (
     { extension }: ExtensionEvent,
     target: chrome.debugger.Debuggee & { sessionId?: string },
@@ -271,10 +437,19 @@ export class DebuggerAPI {
     if (commandParams !== undefined && (commandParams === null || typeof commandParams !== 'object')) {
       throw new Error("Error at parameter 'commandParams': Invalid type: expected object.")
     }
-    if (BLOCKED_METHODS.has(method) || BLOCKED_DOMAINS.some((domain) => method.startsWith(domain))) {
-      throw this.protocolError(`'${method}' wasn't found`)
+    const current = this.attached.get(tabId)!
+    // A page the extension may not debug, reached in a way no event told.
+    if (this.refusal(extension, tab.getURL())) {
+      if (this.release(tabId, { detach: true })) {
+        this.ctx.router.sendEvent(extension.id, 'debugger.onDetach', { tabId }, 'target_closed')
+      }
+      throw new Error('Detached while handling command.')
     }
-    if (method === 'Page.navigate' || method === 'Target.createTarget') {
+    if (target.sessionId !== undefined && !current.entry.sessions.has(String(target.sessionId))) {
+      throw this.protocolError('Session with given id not found.')
+    }
+    this.checkCommand(extension, tab, method, commandParams || {})
+    if (method === 'Page.navigate') {
       const url = String(commandParams?.url ?? '')
       const refused = this.refusal(extension, url)
       if (refused) throw this.protocolError(refused)
