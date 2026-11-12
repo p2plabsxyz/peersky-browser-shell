@@ -265,7 +265,13 @@ class RoutingDelegate {
             extensionId,
             worker: (event as Electron.IpcMainServiceWorkerEvent).serviceWorker,
           }
-    return observer?.addListener(listener, extensionId, eventName, eventSenderUrl(event))
+    try {
+      return observer?.addListener(listener, extensionId, eventName, eventSenderUrl(event))
+    } catch (error) {
+      // An extension removed while one of its pages still runs: nothing to
+      // listen to, and no reason for an uncaught error in the main process.
+      d('listener not added: %s', (error as Error).message)
+    }
   }
 
   private onRemoveListener = (
@@ -790,6 +796,17 @@ export class ExtensionRouter {
     }
   }
 
+  /** The extension whose page or worker sent a call, by its origin; undefined for any other sender. */
+  private senderExtensionId(event: IpcInvokeEvent): string | undefined {
+    const from = this.senderUrl(event)
+    if (!from || !from.startsWith('chrome-extension://')) return undefined
+    try {
+      return new URL(from).hostname || undefined
+    } catch {
+      return undefined
+    }
+  }
+
   async onExtensionMessage(
     event: IpcInvokeEvent,
     extensionId: string | undefined,
@@ -801,6 +818,16 @@ export class ExtensionRouter {
     const eventSession = getSessionFromEvent(event)
     const eventSessionExtensions = eventSession.extensions || eventSession
     const handler = this.getHandler(handlerName)
+
+    // An extension calls as itself, whatever id its page passes, and never
+    // the calls kept for the host's own toolbar (extensionContext false): with
+    // browserAction.activate it could give itself, or any extension, the
+    // click that grants activeTab.
+    const senderId = this.senderExtensionId(event)
+    if (senderId !== undefined) {
+      if (!handler.extensionContext) throw new Error(`${handlerName} is not available to extensions`)
+      if (extensionId !== senderId) throw new Error(`${handlerName} was sent from outside the extension`)
+    }
 
     if (eventSession !== session && !handler.allowRemote) {
       throw new Error(`${handlerName} does not support calling from a remote session`)

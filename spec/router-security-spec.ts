@@ -62,3 +62,73 @@ describe('router event subscriptions', () => {
     expect(sent).to.deep.equal([])
   })
 })
+
+// The toolbar's own calls (browserAction.activate and the rest) come from the
+// host's window. An extension page reaches the router too, with an id of its
+// choosing, and the click it could fake grants activeTab.
+describe('router calls', () => {
+  const id = 'abcdefghijklmnopabcdefghijklmnop'
+  const other = 'ponmlkjihgfedcbaponmlkjihgfedcba'
+
+  const setup = () => {
+    const extensions = new EventEmitter() as any
+    const loaded: Record<string, any> = {
+      [id]: { id, manifest: { manifest_version: 3, permissions: [] } },
+      [other]: { id: other, manifest: { manifest_version: 3, permissions: [] } },
+    }
+    extensions.getExtension = (wanted: string) => loaded[wanted]
+    const session: any = { extensions, serviceWorkers: new EventEmitter() }
+    const router = new ExtensionRouter(session, { addObserver() {} } as any)
+    const calls: any[] = []
+    const handle = router.apiHandler()
+    handle('browserAction.activate', (event: any, ...args: any[]) => calls.push(['activate', event.extension?.id, ...args]), {
+      allowRemote: true,
+      extensionContext: false,
+    })
+    handle('tabs.query', (event: any) => calls.push(['query', event.extension.id]))
+    const from = (url: string) => ({ type: 'frame', sender: { session }, senderFrame: { url } }) as any
+    const worker = (scope: string) => ({ type: 'service-worker', session, serviceWorker: { scope } }) as any
+    return { router, calls, from, worker }
+  }
+  const refusal = (promise: Promise<unknown>) =>
+    promise.then(
+      () => null,
+      (error) => (error as Error).message,
+    )
+
+  it("refuses the toolbar's calls from an extension's page or worker, whatever id it passes", async () => {
+    const { router, calls, from, worker } = setup()
+    const page = from(`chrome-extension://${id}/popup.html`)
+    const activate = { extensionId: other, tabId: 1, eventType: 'click' }
+    expect(await refusal(router.onExtensionMessage(page, '', 'browserAction.activate', {}, activate))).to.equal(
+      'browserAction.activate is not available to extensions',
+    )
+    expect(await refusal(router.onExtensionMessage(page, undefined, 'browserAction.activate', {}, activate))).to.equal(
+      'browserAction.activate is not available to extensions',
+    )
+    expect(
+      await refusal(router.onExtensionMessage(worker(`chrome-extension://${id}/`), id, 'browserAction.activate', {}, activate)),
+    ).to.equal('browserAction.activate is not available to extensions')
+    expect(calls).to.deep.equal([])
+  })
+
+  it('lets the host window make the toolbar calls', async () => {
+    const { router, calls, from } = setup()
+    await router.onExtensionMessage(from('file:///app/index.html'), undefined, 'browserAction.activate', {}, { extensionId: id })
+    expect(calls).to.deep.equal([['activate', undefined, { extensionId: id }]])
+  })
+
+  it('has an extension call only as itself', async () => {
+    const { router, calls, from } = setup()
+    const page = from(`chrome-extension://${id}/page.html`)
+    expect(await refusal(router.onExtensionMessage(page, other, 'tabs.query', {}, {}))).to.equal(
+      'tabs.query was sent from outside the extension',
+    )
+    expect(await refusal(router.onExtensionMessage(page, '', 'tabs.query', {}, {}))).to.equal(
+      'tabs.query was sent from outside the extension',
+    )
+    await router.onExtensionMessage(page, id, 'tabs.query', {}, {})
+    expect(calls).to.deep.equal([['query', id]])
+  })
+
+})
