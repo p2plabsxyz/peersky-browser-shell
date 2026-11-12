@@ -34,6 +34,9 @@ const NAMESPACE_PERMISSIONS: Record<string, string | string[]> = {
   history: 'history',
   identity: 'identity',
   idle: 'idle',
+  // getSelf, uninstallSelf and getPermissionWarningsByManifest name no
+  // permission in management.ts, as Chrome gives them to every extension.
+  management: 'management',
   notifications: 'notifications',
   offscreen: 'offscreen',
   pageCapture: 'pageCapture',

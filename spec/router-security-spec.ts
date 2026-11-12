@@ -74,7 +74,7 @@ describe('router calls', () => {
     const extensions = new EventEmitter() as any
     const loaded: Record<string, any> = {
       [id]: { id, manifest: { manifest_version: 3, permissions: [] } },
-      [other]: { id: other, manifest: { manifest_version: 3, permissions: [] } },
+      [other]: { id: other, manifest: { manifest_version: 3, permissions: ['management'] } },
     }
     extensions.getExtension = (wanted: string) => loaded[wanted]
     const session: any = { extensions, serviceWorkers: new EventEmitter() }
@@ -86,6 +86,8 @@ describe('router calls', () => {
       extensionContext: false,
     })
     handle('tabs.query', (event: any) => calls.push(['query', event.extension.id]))
+    handle('management.getAll', (event: any) => calls.push(['getAll', event.extension.id]))
+    handle('management.getSelf', (event: any) => calls.push(['getSelf', event.extension.id]), { permission: null })
     const from = (url: string) => ({ type: 'frame', sender: { session }, senderFrame: { url } }) as any
     const worker = (scope: string) => ({ type: 'service-worker', session, serviceWorker: { scope } }) as any
     return { router, calls, from, worker }
@@ -131,4 +133,19 @@ describe('router calls', () => {
     expect(calls).to.deep.equal([['query', id]])
   })
 
+  // As in Chrome: every extension may call getSelf, and only one with the
+  // management permission sees and changes the others.
+  it('holds chrome.management to the management permission, all but getSelf', async () => {
+    const { router, calls, from } = setup()
+    const without = from(`chrome-extension://${id}/page.html`)
+    expect(await refusal(router.onExtensionMessage(without, id, 'management.getAll', {}))).to.equal(
+      "'management.getAll' requires the 'management' permission.",
+    )
+    await router.onExtensionMessage(without, id, 'management.getSelf', {})
+    await router.onExtensionMessage(from(`chrome-extension://${other}/page.html`), other, 'management.getAll', {})
+    expect(calls).to.deep.equal([
+      ['getSelf', id],
+      ['getAll', other],
+    ])
+  })
 })
