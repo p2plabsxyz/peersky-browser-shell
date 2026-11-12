@@ -81,6 +81,8 @@ export interface PermissionsHost {
   sendEvent(extensionId: string, eventName: string, ...args: any[]): void
   /** Asks the person; resolves whether they allowed it. */
   prompt(extension: Electron.Extension, request: { permissions: string[]; origins: string[] }): Promise<boolean>
+  /** Chrome's "Allow access to file URLs" for the extension. Off when missing. */
+  isFileAccessAllowed?(extension: Electron.Extension): boolean
 }
 
 /**
@@ -170,6 +172,9 @@ export class ExtensionPermissions {
     }
     // An extension always reaches its own pages, never another extension's.
     if (parsed.protocol === 'chrome-extension:') return parsed.hostname === extension.id
+    // Local files need Chrome's "Allow access to file URLs" as well, whatever
+    // the patterns say: <all_urls> alone never reaches them.
+    if (parsed.protocol === 'file:' && !this.allowsFileAccess(extension)) return false
     const granted = this.ensure(extension)
     if (granted.origins.some((o) => {
       const p = tryParseMatchPattern(o)
@@ -185,6 +190,15 @@ export class ExtensionPermissions {
       if (origin && origin !== 'null' && origin === parsed.origin) return true
     }
     return false
+  }
+
+  /** Whether the extension may read local files: Chrome's "Allow access to file URLs". */
+  allowsFileAccess(extension: Electron.Extension): boolean {
+    try {
+      return this.host.isFileAccessAllowed?.(extension) === true
+    } catch {
+      return false
+    }
   }
 
   /** activeTab: the person invoked the extension on this tab. */

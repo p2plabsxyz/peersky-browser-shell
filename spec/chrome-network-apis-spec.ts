@@ -13,6 +13,7 @@ import { UserScriptsAPI } from '../src/browser/api/user-scripts'
 import { WebRequestAPI } from '../src/browser/api/web-request'
 import { ExtensionPermissions } from '../src/browser/permissions'
 import { mayBacktrackBadly } from '../src/browser/api/lib/guarded-regexp'
+import { prepareNavigationUrl } from '../src/browser/api/tabs'
 
 // Unit specs for the network and page APIs: the security rules and the
 // state kept across restarts, which the parity probe cannot reach.
@@ -249,6 +250,30 @@ describe('network and page APIs', () => {
       expect(Date.now() - started).to.be.lessThan(1000)
       // Plain patterns still match.
       expect(dnr.evaluateOnBeforeRequest({ url: 'https://ads.example/x', method: 'GET', tabId: 1, type: 'xmlhttprequest' } as any)).to.deep.equal({ cancel: true })
+    })
+  })
+
+  // <all_urls> never reaches local files without Chrome's "Allow access to
+  // file URLs". Chrome still lets the extension open one in a tab; it only
+  // cannot read it or script it.
+  describe('local files', () => {
+    const everywhere = extension('files-ext', { permissions: ['scripting', 'tabs'], host_permissions: ['<all_urls>', 'file:///*'] })
+    const permissions = (allowed: boolean) =>
+      new ExtensionPermissions({
+        stateStore: { whenHydrated: async () => {}, getNamespace: (_n: string, f: any) => f, setNamespace: () => {} },
+        sendEvent: () => {},
+        prompt: async () => false,
+        isFileAccessAllowed: () => allowed,
+      } as any)
+
+    it('needs file access as well as the pattern', () => {
+      expect(permissions(false).hasHostAccess(everywhere as any, 'file:///etc/hosts')).to.equal(false)
+      expect(permissions(false).hasHostAccess(everywhere as any, 'https://site.example/')).to.equal(true)
+      expect(permissions(true).hasHostAccess(everywhere as any, 'file:///etc/hosts')).to.equal(true)
+    })
+
+    it('opens a file in a tab without file access, as Chrome does', () => {
+      expect(prepareNavigationUrl('file:///etc/hosts', everywhere as any, permissions(false) as any)).to.equal('file:///etc/hosts')
     })
   })
 

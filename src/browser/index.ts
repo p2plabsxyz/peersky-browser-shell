@@ -248,6 +248,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       stateStore,
       sendEvent: (extensionId, eventName, ...args) => router.sendEvent(extensionId, eventName, ...args),
       prompt: (extension, request) => store.requestPermissions(extension, request as any),
+      isFileAccessAllowed: (extension) => store.impl.isFileSchemeAccessAllowed?.(extension) === true,
     })
     router.setPermissions(permissions)
 
