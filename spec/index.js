@@ -62,7 +62,8 @@ app.commandLine.appendSwitch('use-mock-keychain')
   const os = require('node:os')
   const userData = require('node:fs').mkdtempSync(path.join(os.tmpdir(), 'crx-spec-userdata-'))
   app.setPath('userData', userData)
-  app.on('quit', () => {
+  // The runner ends with process.exit, which skips app 'quit'.
+  process.on('exit', () => {
     try {
       require('node:fs').rmSync(userData, { recursive: true, force: true })
     } catch {}
