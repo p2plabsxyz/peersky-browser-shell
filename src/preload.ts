@@ -26,10 +26,27 @@ const inject = () => {
   injectExtensionAPIs()
 }
 
-// Only load within extension page context. Service workers run only for
-// extensions the library loaded, and have no `location` to check.
+// Only load within extension page context. The session gives this preload to
+// every service worker, websites' too: only an extension's own worker gets the
+// APIs. A website's worker would wait forever on the context call the APIs
+// start with, and never run.
+// A worker's preload runs in a realm of its own, without the worker's
+// location, so the address is read from the worker itself.
+const workerHref = () => {
+  try {
+    const { contextBridge } = require('electron') as typeof import('electron')
+    const href = (contextBridge as any).executeInMainWorld({
+      func: () => String((globalThis as any).location?.href ?? ''),
+    })
+    return typeof href === 'string' ? href : ''
+  } catch {
+    return ''
+  }
+}
+
 if (process.type === 'service-worker') {
-  inject()
+  const href = workerHref()
+  if (href.startsWith('chrome-extension://') && !isComponentExtension(href)) inject()
 } else if (
   typeof location !== 'undefined' &&
   location.href.startsWith('chrome-extension://') &&
