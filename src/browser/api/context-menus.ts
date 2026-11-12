@@ -2,9 +2,31 @@ import { Menu, MenuItem } from 'electron'
 import { MenuItemConstructorOptions } from 'electron/main'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
-import { tryParseMatchPattern } from '../match-pattern'
+import { globMatch, tryParseMatchPattern } from '../match-pattern'
 import { ContextMenuType, getIconImage, matchesPattern } from './common'
 import { noteInvocation, tabForExtension } from '../invocation'
+
+/**
+ * Chrome reads a menu item's URL patterns with any scheme, and a scheme with no
+ * "//" takes the rest as a path, as uBlock Origin's "abp:*" for its "Subscribe
+ * to filter list" item on such links. Host access and content scripts keep the
+ * strict patterns; this is for menu items only.
+ */
+const OPAQUE_MENU_PATTERN = /^([a-z][a-z0-9+.-]*):(?!\/\/)(.+)$/i
+
+export function isMenuPattern(pattern: unknown): boolean {
+  return typeof pattern === 'string' && (!!tryParseMatchPattern(pattern) || (pattern.length <= 2048 && OPAQUE_MENU_PATTERN.test(pattern)))
+}
+
+export function menuPatternMatches(pattern: string, url: string): boolean {
+  const opaque = OPAQUE_MENU_PATTERN.exec(pattern)
+  if (opaque && !tryParseMatchPattern(pattern)) {
+    const scheme = `${opaque[1].toLowerCase()}:`
+    if (!url.toLowerCase().startsWith(scheme)) return false
+    return globMatch(opaque[2], url.slice(scheme.length))
+  }
+  return matchesPattern(pattern, url)
+}
 
 type ContextItemProps = Omit<chrome.contextMenus.CreateProperties, 'id' | 'parentId'> & {
   id: string | number
@@ -112,13 +134,13 @@ const matchesConditions = (
   if (!inContext) return false
 
   if (props.targetUrlPatterns && props.targetUrlPatterns.length > 0 && targetUrl) {
-    if (!props.targetUrlPatterns.some((pattern) => matchesPattern(pattern, targetUrl))) {
+    if (!props.targetUrlPatterns.some((pattern) => menuPatternMatches(pattern, targetUrl))) {
       return false
     }
   }
 
   if (props.documentUrlPatterns && props.documentUrlPatterns.length > 0 && documentUrl) {
-    if (!props.documentUrlPatterns.some((pattern) => matchesPattern(pattern, documentUrl))) {
+    if (!props.documentUrlPatterns.some((pattern) => menuPatternMatches(pattern, documentUrl))) {
       return false
     }
   }
@@ -361,7 +383,7 @@ export class ContextMenusAPI {
       if (!Array.isArray(patterns)) throw new Error(`Invalid url pattern '${patterns}'`)
       if (patterns.length > MAX_PATTERNS) throw new Error(`Invalid url pattern '${patterns[MAX_PATTERNS]}'`)
       for (const pattern of patterns) {
-        if (typeof pattern !== 'string' || !tryParseMatchPattern(pattern)) {
+        if (!isMenuPattern(pattern)) {
           throw new Error(`Invalid url pattern '${pattern}'`)
         }
       }
