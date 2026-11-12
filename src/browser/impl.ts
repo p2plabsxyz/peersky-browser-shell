@@ -59,9 +59,12 @@ export interface ChromeExtensionImpl {
    * Open a window. `details.type` is 'normal' or 'popup' (a window without a
    * tab strip, holding one tab); `details.url` the pages to open in it, one
    * tab each; `details.focused` false to open it without focus. The host
-   * adds each tab with `addTab` before it resolves.
+   * adds each tab with `addTab` before it resolves. Resolves with the window,
+   * or with [webContents of its first tab, window].
    */
-  createWindow?(details: chrome.windows.CreateData): Promise<Electron.BaseWindow>
+  createWindow?(
+    details: chrome.windows.CreateData,
+  ): Promise<Electron.BaseWindow | [Electron.WebContents, Electron.BaseWindow]>
   removeWindow?(window: Electron.BaseWindow): void
 
   requestPermissions?(

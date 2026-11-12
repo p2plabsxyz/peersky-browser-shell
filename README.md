@@ -155,8 +155,9 @@ module.exports = {
     `chrome.tabs.remove` is invoked by an extension.
     - `webContents` Electron.WebContents - The tab to be removed.
     - `browserWindow` Electron.BrowserWindow - The window which owns the tab.
-  - `createWindow(details) => Promise<Electron.BrowserWindow>`
+  - `createWindow(details) => Promise<Electron.BaseWindow | [Electron.WebContents, Electron.BaseWindow]>`
     (optional) - Called when `chrome.windows.create` is invoked by an extension.
+    Resolves with the window, or with the first tab's webContents and the window.
     - `details` [chrome.windows.CreateData](https://developer.chrome.com/docs/extensions/reference/windows/#method-create)
   - `removeWindow(browserWindow) => Promise<Electron.BrowserWindow>`
     (optional) - Called when `chrome.windows.remove` is invoked by an extension.
@@ -348,12 +349,12 @@ An API shows up only for an extension that asks for its permission, as in Chrome
 | `chrome.bookmarks` | A tree like Chrome's, kept per session. Follow changes with the `bookmarks-changed` event; push the host's own bookmarks with `replaceBookmarks()` or `importBookmarks()`. |
 | `chrome.browsingData` | Removes the session's data. Return the host's own pages from the `getProtectedOrigins` hook so they are never cleared. |
 | `chrome.commands` | Call `api.commands.execute(extensionId, name)` when the person presses a shortcut. |
-| `chrome.contentSettings` | Rules kept per session. JavaScript, images and cookies apply on the `webRequest` bridge; ask `getContentSetting(type, url)` from the host's permission and window-open handlers. |
+| `chrome.contentSettings` | Rules kept per session. JavaScript, images and cookies apply on the `webRequest` bridge; ask `getContentSetting(type, url)` from the host's permission and window-open handlers. The `getContentSetting` hook gives the host's own site settings where no extension rule decides. |
 | `chrome.contextMenus` | `getContextMenuItems(webContents, params)` builds the items. |
 | `chrome.cookies` | Only cookies of hosts the extension has access to. |
-| `chrome.debugger` | Only tabs; never browser pages or other extensions' pages. |
+| `chrome.debugger` | Only tabs and their own frames and workers, never browser pages or other extensions' pages, and only the DevTools commands Chrome allows an extension. |
 | `chrome.declarativeContent` | Rules kept per session; ShowAction, SetIcon and RequestContentScript. |
-| `chrome.declarativeNetRequest` | Static, dynamic and session rules on the `webRequest` bridge. |
+| `chrome.declarativeNetRequest` | Static, dynamic and session rules on the `webRequest` bridge. A `regexFilter` that could backtrack for long runs under a time limit. |
 | `chrome.desktopCapture` | `chooseDesktopMedia` hook for the host's picker; without it every request is cancelled. |
 | `chrome.downloads` | Kept per session. `setDownloadUiEnabled` hook. |
 | `chrome.extension`, `chrome.runtime` | `onInstalled`, `onStartup`, `onExtensionLoaded` and `onEnabled` fire as in Chrome. |
@@ -368,9 +369,9 @@ An API shows up only for an extension that asks for its permission, as in Chrome
 | `chrome.pageCapture`, `chrome.tabCapture` | |
 | `chrome.permissions` | Optional permissions need a user gesture and the person's yes (the `requestPermissions` hook, or a system dialog), and are kept across restarts. |
 | `chrome.privacy` | Kept per session. Read the rest with `getPrivacySettings()`. |
-| `chrome.proxy` | Applied with `session.setProxy`. |
+| `chrome.proxy` | Applied with `session.setProxy` and kept per session; an extension's proxy counts again once it loads after a restart. `getProxySettings()` and the `proxy-changed` event tell the host which proxy counts and which extension set it, for example to apply it before extensions load; `restoreExtensionProxy()` hands back one the host kept itself under 1.x. |
 | `chrome.readingList`, `chrome.search` | `getSearchUrl` hook for the host's search engine. |
-| `chrome.scripting`, `chrome.userScripts` | userScripts is off until the host's `isUserScriptsAllowed` hook allows it for the extension, as Chrome's "Allow User Scripts" switch does; while off, `chrome.userScripts` is not there. |
+| `chrome.scripting`, `chrome.userScripts` | userScripts is off until the host's `isUserScriptsAllowed` hook allows it for the extension, as Chrome's "Allow User Scripts" switch does; while off, `chrome.userScripts` is not there. Local files are reached only when the `isFileSchemeAccessAllowed` hook allows it, as Chrome's "Allow access to file URLs" does, whatever the extension's patterns say. |
 | `chrome.sessions` | Tabs and windows closed in this run. |
 | `chrome.sidePanel` | `openSidePanel` and `closeSidePanel` hooks. |
 | `chrome.system.cpu`, `.memory`, `.display`, `.storage` | |
@@ -387,23 +388,19 @@ All hooks on the `ElectronChromeExtensions` options are optional; each has a saf
 
 ### Development & testing
 
-From the `peersky-chrome-extensions` directory:
+From the repository root:
 
 ```bash
-yarn install
-yarn build
-yarn test
+npm ci
+npm run build
+npm test
 ```
 
 The test suite runs **Electron + Mocha** (see `spec/index.js`). It expects a dev install that includes `yargs` (listed in `devDependencies`).
 
-- **CI-equivalent run** (build + tests): `yarn test:ci`
-- **Against Chrome**: `PROBE_SUITES=tabs,windows PROBE_RESULTS_OUT=/tmp/shell.json yarn test --files spec/chrome-api-parity-spec.ts` runs some of the probe suites, and `node script/probe-diff.js /tmp/shell.json tabs,windows` shows where the shell differs from Chrome. To record Chrome's answers again after changing a suite, run `CHROME=<Chrome for Testing binary> node script/chrome-parity.mjs --only=tabs` (branded Chrome no longer loads unpacked extensions from the command line). Chrome runs headless with a temporary profile.
-- **Native messaging tests** (`spec/chrome-nativeMessaging-spec.ts`) build a small SEA host under `script/native-messaging-host/`. That step can be slow or flaky on some Windows/CI machines. In GitHub Actions we set `SKIP_NATIVE_MESSAGING=1` so the rest of the suite stays green; to run those tests locally, omit that variable and use a machine where `node script/native-messaging-host/build.js <extensionId>` completes successfully.
-
-### Continuous integration
-
-The workflow `.github/workflows/peersky-chrome-extensions.yml` runs `yarn install --frozen-lockfile` and `yarn test:ci` on Ubuntu (with `xvfb-run`) and Windows when files under `peersky-chrome-extensions/` change.
+- **Build and test in one run**: `npm run test:ci`
+- **Against Chrome**: `PROBE_SUITES=tabs,windows PROBE_RESULTS_OUT=/tmp/shell.json npm test -- --files spec/chrome-api-parity-spec.ts` runs some of the probe suites, and `node script/probe-diff.js /tmp/shell.json tabs,windows` shows where the shell differs from Chrome. To record Chrome's answers again after changing a suite, run `CHROME=<Chrome for Testing binary> node script/chrome-parity.mjs --only=tabs` (branded Chrome no longer loads unpacked extensions from the command line). Chrome runs headless with a temporary profile.
+- **Native messaging tests** (`spec/chrome-nativeMessaging-spec.ts`) build a small SEA host under `script/native-messaging-host/`. That step can be slow or flaky on some machines: set `SKIP_NATIVE_MESSAGING=1` to run the rest of the suite without them, and run them on a machine where `node script/native-messaging-host/build.js <extensionId>` completes.
 
 ## Limitations
 

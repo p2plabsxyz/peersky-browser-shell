@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0] - 2026-11-09 (@p2plabs/peersky-chrome-extensions)
+## [2.0.0] - 2026-11-12 (@p2plabs/peersky-chrome-extensions)
 
 Versions of this fork follow their own numbers; the entries from 4.0.0 down are upstream electron-chrome-extensions.
 
@@ -21,6 +21,7 @@ Extensions now behave as in Chrome 157. Two test extensions were run in Chrome f
 - `chrome.storage.local` is Electron's own store, shared by an extension's pages, worker and content scripts as in Chrome, and no longer encrypted at rest (Chrome does not encrypt it either). What 1.x kept is moved there once, before the extension's first call, and the old encrypted file is deleted only after the move is written.
 - `chrome.userScripts` is off until the host's `isUserScriptsAllowed` hook allows it for the extension, as Chrome's "Allow User Scripts" switch does.
 - `ChromeExtensionImpl.createWindow` may return the window or `[webContents, window]`.
+- `<all_urls>` and `file://` patterns reach local files only when the host's `isFileSchemeAccessAllowed` hook allows it for the extension, as Chrome's "Allow access to file URLs" does.
 - Electron 43 or later.
 
 ### Added
@@ -29,10 +30,15 @@ Extensions now behave as in Chrome 157. Two test extensions were run in Chrome f
 - `runtime.onInstalled`, `onStartup`, `onExtensionLoaded` and `onEnabled` fire as in Chrome. On the first run after updating from 1.x, an extension that already stored data gets `chrome_update`, not `install`.
 - activeTab, granted by a toolbar click, a context menu item, a shortcut or the omnibox.
 - Optional host hooks for everything only the host can do, each with a safe default (see `src/browser/impl.ts` and the README).
+- `getProxySettings()` and the `proxy-changed` event: the proxy an extension set that counts now and which extension set it. `restoreExtensionProxy()` hands an extension back a proxy the host kept itself while 1.x kept `chrome.proxy` in memory only.
 
 ### Fixed
 
 - Calling `chrome.system.cpu`, `memory`, `display` or `storage` crashed the browser.
+- Every chrome.* call and event was logged to the extension's console with its arguments and result, cookie values included: the preload was built in development mode.
+- `chrome.debugger` could reach past the tab it was attached to: other targets, the host's windows, other extensions' pages and workers, local files and any site's data. It now has only the DevTools commands Chrome allows an extension, the tab's own frames and workers, and a redirect into another extension's page detaches it.
+- An extension with `webRequest` could answer for another extension's blocking listener and so cancel or redirect any request.
+- A `declarativeNetRequest` rule's or `downloads.search` regular expression could hold up the main process.
 - `removeListener` never removed a listener.
 - Events sent right after an extension loaded could be dropped for 30 seconds.
 - Host permission patterns could be passed by a URL carrying the host in its path or query, and a pattern full of stars could stall the main process.
