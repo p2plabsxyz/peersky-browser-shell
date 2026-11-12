@@ -186,6 +186,25 @@ export class ExtensionSettings {
   }
 
   /**
+   * Puts back a value an extension set while the host kept it, before this
+   * store did. Unlike set(), it does not count the extension as loaded: the
+   * value counts once the extension loads, as if it had set it then. An
+   * extension with a value of its own here keeps that one. Resolves true when
+   * the value was put back.
+   */
+  async restore(extensionId: string, key: string, value: unknown): Promise<boolean> {
+    await this.ready
+    if (this.state.prefs[key] && hasOwn(this.state.prefs[key], extensionId)) return false
+    if (!hasOwn(this.state.order, extensionId)) this.state.order[extensionId] = this.state.next++
+    const before = this.effective(key)
+    const byExtension = (this.state.prefs[key] ||= {})
+    byExtension[extensionId] = { regular: value }
+    this.save()
+    await this.notify(key, before)
+    return true
+  }
+
+  /**
    * Drops everything an extension set, as Chrome does when it is uninstalled.
    * Electron does not tell an uninstall from an unload, so the host calls this.
    */

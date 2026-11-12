@@ -191,7 +191,25 @@ export class ProxyAPI {
     this.settings.onChange(async ({ key, value }) => {
       if (key !== 'proxy') return
       await this.ctx.session.setProxy(toElectronProxyConfig(value as chrome.proxy.ProxyConfig | undefined))
+      this.ctx.emit('proxy-changed', this.getSettings())
     })
+  }
+
+  /** The proxy an extension set that counts now and that extension, or null when none does. */
+  getSettings(): { value: chrome.proxy.ProxyConfig; extensionId: string } | null {
+    const current = this.settings.effective('proxy')
+    if (!current) return null
+    return { value: JSON.parse(JSON.stringify(current.value)), extensionId: current.controller }
+  }
+
+  /**
+   * Puts back a proxy an extension set while the host kept it. It counts once
+   * the extension is loaded, as if the extension had set it then; one the
+   * extension set here itself stays. Resolves true when it was put back.
+   */
+  async restore(extensionId: string, value: chrome.proxy.ProxyConfig): Promise<boolean> {
+    if (typeof extensionId !== 'string' || !extensionId) throw new TypeError('An extension id is required.')
+    return this.settings.restore(extensionId, 'proxy', normalizeProxyConfig(value))
   }
 
   /** The proxy config that counts now, as chrome.proxy.settings.get reports it. */

@@ -6,11 +6,13 @@ import { last, settingsHarness, tick } from './settings-harness'
 describe('chrome.proxy', () => {
   const setup = (state: Record<string, unknown> = {}) => {
     const h = settingsHarness(state)
-    new ProxyAPI(h.ctx)
+    const proxy = new ProxyAPI(h.ctx)
     const ext1 = h.extension('ext-1', ['proxy'])
     const ext2 = h.extension('ext-2', ['proxy'])
-    return { ...h, ext1, ext2 }
+    return { ...h, proxy, ext1, ext2 }
   }
+  const proxyChanges = (h: ReturnType<typeof setup>) =>
+    h.emitted.filter((e) => e.name === 'proxy-changed').map((e) => e.payload)
   const onChanges = (h: ReturnType<typeof setup>, extensionId: string) =>
     h.events.filter((e) => e.name === 'proxy.settings.onChange' && e.extensionId === extensionId).map((e) => e.args[0])
 
@@ -69,6 +71,76 @@ describe('chrome.proxy', () => {
       mode: 'fixed_servers',
       rules: { singleProxy: { scheme: 'http', host: '127.0.0.1', port: 9 } },
     })
+  })
+
+  it('tells the host which proxy counts and which extension set it, once the session uses it', async () => {
+    const h = setup()
+    await h.load(h.ext1)
+    expect(h.proxy.getSettings()).to.equal(null)
+
+    const vpn = { mode: 'fixed_servers', rules: { singleProxy: { scheme: 'https', host: 'vpn.example', port: 443 } } }
+    await h.call('proxy.settings.set', h.ext1, { value: vpn })
+    expect(h.proxy.getSettings()).to.deep.equal({ value: vpn, extensionId: 'ext-1' })
+    expect(proxyChanges(h)).to.deep.equal([{ value: vpn, extensionId: 'ext-1' }])
+    expect(h.proxyCalls).to.deep.equal([{ mode: 'fixed_servers', proxyRules: 'https://vpn.example:443' }])
+
+    // Turned off, its proxy stops counting, and the host hears there is none.
+    await h.unload(h.ext1)
+    expect(h.proxy.getSettings()).to.equal(null)
+    expect(proxyChanges(h)).to.deep.equal([{ value: vpn, extensionId: 'ext-1' }, null])
+
+    // What the host is handed is a copy.
+    await h.load(h.ext1)
+    h.proxy.getSettings()!.value.mode = 'direct'
+    expect(h.proxy.getSettings()!.value).to.deep.equal(vpn)
+  })
+
+  it('puts back a proxy the host kept, counting it once its extension loads, as if the extension had set it', async () => {
+    const state = {}
+    const h = setup(state)
+    const pac = 'function FindProxyForURL() { return "HTTPS vpn.example:443" }'
+    // Kept as Chrome keeps what an extension sets.
+    const vpn = { mode: 'pac_script', pacScript: { data: pac, mandatory: false } }
+
+    expect(await h.proxy.restore('ext-1', { mode: 'pac_script', pacScript: { data: pac } } as chrome.proxy.ProxyConfig)).to.equal(true)
+    // Not loaded yet: nothing counts, and the session is left alone.
+    expect(h.proxy.getSettings()).to.equal(null)
+    expect(h.proxyCalls).to.deep.equal([])
+
+    await h.load(h.ext1)
+    expect(h.proxy.getSettings()).to.deep.equal({ value: vpn, extensionId: 'ext-1' })
+    expect(h.proxyCalls).to.have.length(1)
+    expect(h.proxyCalls[0].mode).to.equal('pac_script')
+    expect(await h.call('proxy.settings.get', h.ext1, {})).to.deep.equal({
+      levelOfControl: 'controlled_by_this_extension',
+      value: vpn,
+    })
+
+    // It is the extension's own setting from then on: kept across a restart,
+    // where the host handing back what it kept changes nothing, and gone with
+    // the extension's clear.
+    const after = setup(state)
+    expect(await after.proxy.restore('ext-1', { mode: 'direct' })).to.equal(false)
+    await after.load(after.ext1)
+    expect(after.proxy.getSettings()).to.deep.equal({ value: vpn, extensionId: 'ext-1' })
+    await after.call('proxy.settings.clear', after.ext1, {})
+    expect(after.proxy.getSettings()).to.equal(null)
+    expect(last(after.proxyCalls)).to.deep.equal({ mode: 'system' })
+  })
+
+  it('refuses to put back a proxy Chrome would refuse', async () => {
+    const h = setup()
+    const refusal = async (id: any, value: any) => {
+      try {
+        await h.proxy.restore(id, value)
+      } catch (error) {
+        return (error as Error).message
+      }
+      return null
+    }
+    expect(await refusal('ext-1', { mode: 'fixed_servers' })).to.equal("Proxy mode 'fixed_servers' requires a 'rules' field.")
+    expect(await refusal('', { mode: 'direct' })).to.equal('An extension id is required.')
+    expect(h.proxy.getSettings()).to.equal(null)
   })
 
   it('fixed_servers maps to Electron proxyRules and bypass list', async () => {

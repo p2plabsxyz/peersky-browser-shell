@@ -619,6 +619,27 @@ export class ElectronChromeExtensions extends EventEmitter {
   }
 
   /**
+   * The proxy an extension set that counts now, as { value, extensionId },
+   * with value as chrome.proxy.settings.get reports it; null when no
+   * extension controls the proxy. A change comes as a 'proxy-changed' event
+   * with the same object, once the session uses it.
+   */
+  getProxySettings(): { value: chrome.proxy.ProxyConfig; extensionId: string } | null {
+    return this.api.proxy.getSettings()
+  }
+
+  /**
+   * Hands an extension back a proxy it set while the host kept extensions'
+   * proxies itself (1.x kept chrome.proxy in memory only). It counts once
+   * that extension is loaded, as if the extension had set it, and is kept
+   * with the extension's other settings from then on. A proxy the extension
+   * set with this version stays as it is. Resolves true when it was put back.
+   */
+  restoreExtensionProxy(extensionId: string, value: chrome.proxy.ProxyConfig): Promise<boolean> {
+    return this.api.proxy.restore(extensionId, value)
+  }
+
+  /**
    * What chrome.contentSettings says for a page, such as
    * getContentSetting('notifications', 'https://a.example/'): 'allow',
    * 'block', 'ask' or (cookies) 'session_only'. The host asks it from its own
