@@ -200,6 +200,24 @@ describe('network and page APIs', () => {
       const { call } = setup()
       expect(await call('webRequest.addOnBeforeRequestListener', watcher, { urls: ['<all_urls>'] }, ['blocking'])).to.equal(undefined)
     })
+
+    // Another extension could answer for a request it cannot even see, with
+    // listener ids of its choosing, and redirect a page anywhere.
+    it('takes a blocking answer only from the listener the request went to, and only its first', async () => {
+      const blocker = extension('wr-blocker', { permissions: ['webRequest', 'webRequestBlocking'], host_permissions: ['https://site.example/*'] })
+      const intruder = extension('wr-intruder', { permissions: ['webRequest', 'webRequestBlocking'] })
+      const h = makeCtx({ extensions: [blocker, intruder] })
+      const api = new WebRequestAPI(h.ctx)
+      const id = await h.call('webRequest.addOnBeforeRequestListener', blocker, { urls: ['<all_urls>'] }, ['blocking'])
+      const pending = api.notifyOnBeforeRequest(request({ id: 7, resourceType: 'mainFrame' }))
+      const respond = (ext: any, listenerId: any, result: any) => h.call('webRequest.onBeforeRequest.response', ext, '7', listenerId, result)
+      for (let n = 0; n < 50; n++) await respond(intruder, `wr-${n}`, { redirectUrl: 'https://attacker.example/' })
+      await respond(intruder, id, { cancel: true })
+      await respond(intruder, { redirectUrl: 'https://attacker.example/' }, undefined)
+      await respond(blocker, id, {})
+      await respond(blocker, id, { cancel: true })
+      expect(await pending).to.deep.equal({})
+    })
   })
 
   describe('declarativeNetRequest', () => {

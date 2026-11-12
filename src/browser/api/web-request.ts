@@ -173,7 +173,8 @@ interface ElectronRequestDetails {
 interface PendingBlockingRequest<T = WebRequestBlockingResponse> {
   resolve: (result: T) => void
   results: Map<string, any>
-  expectedCount: number
+  /** The blocking listeners the event went to, by listener id: the extension each belongs to. */
+  awaiting: Map<string, string>
   timeoutHandle: ReturnType<typeof setTimeout>
   merge: (results: Map<string, any>) => T
 }
@@ -333,14 +334,15 @@ export class WebRequestAPI {
     maybeResult?: WebRequestBlockingResponse,
   ) => {
     const pending = this.pendingBlocking.get(`${stage}:${requestId}`)
-    if (!pending) return
-    const listenerId = typeof listenerIdOrResult === 'string' ? listenerIdOrResult : extension.id
-    // Only the listener the event went to may answer for it.
-    const entry = this.list(stage as EventName).find((e) => e.id === listenerId)
-    if (typeof listenerIdOrResult === 'string' && entry && entry.extensionId !== extension.id) return
-    const result = typeof listenerIdOrResult === 'string' ? maybeResult : listenerIdOrResult
+    if (!pending || !extension) return
+    // Only a blocking listener the event went to answers for it, once, from
+    // its own extension. Any other answer would let an extension with no
+    // access to the page cancel or redirect it, or overrule another one.
+    const listenerId = typeof listenerIdOrResult === 'string' ? listenerIdOrResult : undefined
+    if (!listenerId || pending.awaiting.get(listenerId) !== extension.id || pending.results.has(listenerId)) return
+    const result = maybeResult
     pending.results.set(listenerId, result && typeof result === 'object' ? result : {})
-    if (pending.results.size >= pending.expectedCount) {
+    if (pending.results.size >= pending.awaiting.size) {
       this.settlePending(`${stage}:${requestId}`)
     }
   }
@@ -910,7 +912,7 @@ export class WebRequestAPI {
       this.pendingBlocking.set(key, {
         resolve: resolve as any,
         results: new Map(),
-        expectedCount: blocking.length,
+        awaiting: new Map(blocking.map((entry) => [entry.id, entry.extensionId])),
         timeoutHandle,
         merge: merge as any,
       })
