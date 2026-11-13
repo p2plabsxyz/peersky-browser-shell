@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Chrome API probe peer",
+  "description": "A second extension with almost no permissions, for the probe to talk to.",
+  "version": "1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyvBwNkNjNOsS6waXGJazbhdwm+gBA41uzXdRDCsOHX0X7jtfLrAAjAIJDQJLOnS+dpAX8pJDadhQ4oJk3n9LTjvVXn9zRSmNv1aXv7DzHXYGslYWhpHG+/EjPfvXqtSTXQ+5xY7JJp+XQWnWA9mFz76A6QU6pOFecu0y0ccH30RB/gTU8PzDFOurMHFQbBNVBC9py10HQIJZPcD4StzE3J3sGyeccrhhf2/FiO8+sUWNhPggaTXDXTMS0eojzojFInT7mHhBZKHtQ8Py1Vd6GVf4JavSMbTbbMPVTJQKdzb4QsFpoutj/1sEx0kLv1HM0ZaFF9aYKc2ghWnDH7EhGwIDAQAB",
+  "background": {
+    "service_worker": "sw.js"
+  },
+  "permissions": [
+    "storage"
+  ]
+}

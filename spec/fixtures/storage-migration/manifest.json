@@ -1,0 +1,10 @@
+{
+  "manifest_version": 3,
+  "name": "storage-migration",
+  "version": "1.0",
+  "background": { "service_worker": "sw.js" },
+  "permissions": ["storage"],
+  "content_scripts": [
+    { "matches": ["http://127.0.0.1/*"], "js": ["content.js"], "run_at": "document_end" }
+  ]
+}

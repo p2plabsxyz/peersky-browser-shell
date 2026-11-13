@@ -36,11 +36,39 @@ import { ExtensionStateStore } from './state-store'
 import { AlarmsAPI } from './api/alarms'
 import { DownloadsAPI } from './api/downloads'
 import { SidePanelAPI } from './api/side-panel'
+import { SystemAPI } from './api/system'
+import { BookmarksAPI, BookmarkImportNode } from './api/bookmarks'
+import { HistoryAPI } from './api/history'
+import { TopSitesAPI } from './api/top-sites'
+import { ReadingListAPI } from './api/reading-list'
+import { SearchAPI } from './api/search'
+import { OmniboxAPI, OmniboxDisposition, OmniboxKeyword, OmniboxSuggestion } from './api/omnibox'
+import { SessionsAPI } from './api/sessions'
+import { TabGroupsAPI } from './api/tab-groups'
+import { BrowsingDataAPI } from './api/browsing-data'
+import { ContentSettingsAPI } from './api/content-settings'
+import { FontSettingsAPI } from './api/font-settings'
+import { PrivacyAPI } from './api/privacy'
+import { TtsAPI } from './api/tts'
+import { PageCaptureAPI } from './api/page-capture'
+import { TabCaptureAPI } from './api/tab-capture'
+import { DesktopCaptureAPI } from './api/desktop-capture'
+import { DeclarativeContentAPI } from './api/declarative-content'
+import { ExtensionPermissions } from './permissions'
+import { ExtensionSettings } from './api/chrome-setting'
+
+export type { BookmarkChange, BookmarkImportNode } from './api/bookmarks'
+export type {
+  OmniboxDescriptionStyle,
+  OmniboxDisposition,
+  OmniboxKeyword,
+  OmniboxSuggestion,
+} from './api/omnibox'
 
 function checkVersion() {
   const electronVersion = process.versions.electron
-  if (electronVersion && parseInt(electronVersion.split('.')[0], 10) < 35) {
-    console.warn('electron-chrome-extensions requires electron@>=35.0.0')
+  if (electronVersion && parseInt(electronVersion.split('.')[0], 10) < 43) {
+    console.warn('@p2plabs/peersky-chrome-extensions requires electron@>=43.0.0')
   }
 }
 
@@ -171,6 +199,24 @@ export class ElectronChromeExtensions extends EventEmitter {
     downloads: DownloadsAPI
     scripting: ScriptingAPI
     sidePanel: SidePanelAPI
+    system: SystemAPI
+    bookmarks: BookmarksAPI
+    history: HistoryAPI
+    topSites: TopSitesAPI
+    readingList: ReadingListAPI
+    search: SearchAPI
+    omnibox: OmniboxAPI
+    sessions: SessionsAPI
+    tabGroups: TabGroupsAPI
+    browsingData: BrowsingDataAPI
+    contentSettings: ContentSettingsAPI
+    fontSettings: FontSettingsAPI
+    privacy: PrivacyAPI
+    tts: TtsAPI
+    pageCapture: PageCaptureAPI
+    tabCapture: TabCaptureAPI
+    desktopCapture: DesktopCaptureAPI
+    declarativeContent: DeclarativeContentAPI
     storageSync: StorageSyncAPI
     tabs: TabsAPI
     webNavigation: WebNavigationAPI
@@ -191,9 +237,20 @@ export class ElectronChromeExtensions extends EventEmitter {
 
     sessionMap.set(session, this)
 
+    // Each API follows extension loads and unloads; there are more of them
+    // than Node's default warning count.
+    ;((session.extensions || session) as any).setMaxListeners?.(100)
+
     const router = new ExtensionRouter(session)
     const store = new ExtensionStore(impl)
     const stateStore = new ExtensionStateStore(session)
+    const permissions = new ExtensionPermissions({
+      stateStore,
+      sendEvent: (extensionId, eventName, ...args) => router.sendEvent(extensionId, eventName, ...args),
+      prompt: (extension, request) => store.requestPermissions(extension, request as any),
+      isFileAccessAllowed: (extension) => store.impl.isFileSchemeAccessAllowed?.(extension) === true,
+    })
+    router.setPermissions(permissions)
 
     this.ctx = {
       emit: this.emit.bind(this),
@@ -201,6 +258,7 @@ export class ElectronChromeExtensions extends EventEmitter {
       session,
       store,
       stateStore,
+      permissions,
     }
     void stateStore.hydrate().catch((error) => {
       console.error('Failed to hydrate extension API state store:', error)
@@ -228,6 +286,24 @@ export class ElectronChromeExtensions extends EventEmitter {
       downloads: new DownloadsAPI(this.ctx),
       scripting: new ScriptingAPI(this.ctx),
       sidePanel: new SidePanelAPI(this.ctx),
+      system: new SystemAPI(this.ctx),
+      bookmarks: new BookmarksAPI(this.ctx),
+      history: new HistoryAPI(this.ctx),
+      topSites: new TopSitesAPI(this.ctx),
+      readingList: new ReadingListAPI(this.ctx),
+      search: new SearchAPI(this.ctx),
+      omnibox: new OmniboxAPI(this.ctx),
+      sessions: new SessionsAPI(this.ctx),
+      tabGroups: new TabGroupsAPI(this.ctx),
+      browsingData: new BrowsingDataAPI(this.ctx),
+      contentSettings: new ContentSettingsAPI(this.ctx),
+      fontSettings: new FontSettingsAPI(this.ctx),
+      privacy: new PrivacyAPI(this.ctx),
+      tts: new TtsAPI(this.ctx),
+      pageCapture: new PageCaptureAPI(this.ctx),
+      tabCapture: new TabCaptureAPI(this.ctx),
+      desktopCapture: new DesktopCaptureAPI(this.ctx),
+      declarativeContent: new DeclarativeContentAPI(this.ctx),
       storageSync: new StorageSyncAPI(this.ctx),
       tabs: new TabsAPI(this.ctx),
       webNavigation: new WebNavigationAPI(this.ctx),
@@ -292,6 +368,10 @@ export class ElectronChromeExtensions extends EventEmitter {
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     sessionExtensions.addListener('extension-loaded', (_event, extension) => {
       readLoadedExtensionManifest(this.ctx, extension)
+      void this.ctx.permissions
+        .load(extension)
+        .then(() => this.api.runtime.onExtensionLoaded(extension))
+        .catch((error) => console.error(`Failed to set up ${extension.id}:`, error))
 
       // Start MV3 background service workers so extensions can
       // initialize themselves (enable DNR rulesets, set up event
@@ -305,10 +385,15 @@ export class ElectronChromeExtensions extends EventEmitter {
     if (typeof getAll === 'function') {
       const list = getAll.call(sessionExtensions) || []
       for (const ext of list) {
+        void this.ctx.permissions
+          .load(ext)
+          .then(() => this.api.runtime.onExtensionLoaded(ext))
+          .catch((error) => console.error(`Failed to set up ${ext.id}:`, error))
         this.startExtensionServiceWorker(ext)
       }
     }
-    sessionExtensions.addListener('extension-unloaded', () => {
+    sessionExtensions.addListener('extension-unloaded', (_event, extension) => {
+      this.ctx.permissions.unload(extension.id)
       void this.ctx.stateStore.flush().catch((error) => {
         console.error('Failed to flush extension API state store:', error)
       })
@@ -453,11 +538,26 @@ export class ElectronChromeExtensions extends EventEmitter {
     return this.api.webRequest.notifyOnBeforeRequest(details)
   }
 
-  /** webRequest.onBeforeSendHeaders bridge. */
-  notifyWebRequestOnBeforeSendHeaders(
+  /**
+   * webRequest.onBeforeSendHeaders bridge. The host calls it from its own
+   * `session.webRequest.onBeforeSendHeaders` and sends the request with the
+   * headers it returns. Besides extensions' listeners, it applies
+   * chrome.privacy (DNT, Referer) and chrome.contentSettings cookie rules, so
+   * a host that skips it for a request skips those too.
+   */
+  async notifyWebRequestOnBeforeSendHeaders(
     details: Electron.OnBeforeSendHeadersListenerDetails,
   ): Promise<{ requestHeaders?: Record<string, string | string[]> }> {
-    return this.api.webRequest.notifyOnBeforeSendHeaders(details)
+    // Chrome sets these before extensions see the request.
+    const withPrivacy = this.api.privacy.requestHeadersFor(details.requestHeaders)
+    const headers =
+      this.api.contentSettings.requestHeadersFor(details, withPrivacy ?? details.requestHeaders) ?? withPrivacy
+    if (!headers) return this.api.webRequest.notifyOnBeforeSendHeaders(details)
+    const result = await this.api.webRequest.notifyOnBeforeSendHeaders({
+      ...details,
+      requestHeaders: headers as Record<string, string>,
+    })
+    return result.requestHeaders ? result : { ...result, requestHeaders: headers }
   }
 
   /** webRequest.onSendHeaders bridge. */
@@ -465,11 +565,21 @@ export class ElectronChromeExtensions extends EventEmitter {
     return this.api.webRequest.notifyOnSendHeaders(details)
   }
 
-  /** webRequest.onHeadersReceived bridge. */
-  notifyWebRequestOnHeadersReceived(
+  /**
+   * webRequest.onHeadersReceived bridge. The host calls it from its own
+   * `session.webRequest.onHeadersReceived` and uses the headers it returns.
+   * Besides extensions' listeners, it applies chrome.contentSettings rules for
+   * JavaScript, images and cookies.
+   */
+  async notifyWebRequestOnHeadersReceived(
     details: Electron.OnHeadersReceivedListenerDetails,
   ): Promise<{ responseHeaders?: Record<string, string | string[]> }> {
-    return this.api.webRequest.notifyOnHeadersReceived(details)
+    const result = await this.api.webRequest.notifyOnHeadersReceived(details)
+    const headers = this.api.contentSettings.responseHeadersFor(
+      details,
+      result.responseHeaders ?? details.responseHeaders,
+    )
+    return headers ? { ...result, responseHeaders: headers } : result
   }
 
   notifyWebRequestOnBeforeRedirect(
@@ -498,12 +608,164 @@ export class ElectronChromeExtensions extends EventEmitter {
   }
 
   /**
+   * The chrome.privacy settings that count now, as
+   * { network: {...}, services: {...}, websites: {...} }. Most are the host's
+   * own features (autofill, password saving, search suggestions, Safe
+   * Browsing, ...), for it to follow; changes come as a
+   * 'privacy-setting-changed' event with { name, value, controlledBy }.
+   */
+  getPrivacySettings(): Record<string, Record<string, unknown>> {
+    return this.api.privacy.getAll()
+  }
+
+  /**
+   * The proxy an extension set that counts now, as { value, extensionId },
+   * with value as chrome.proxy.settings.get reports it; null when no
+   * extension controls the proxy. A change comes as a 'proxy-changed' event
+   * with the same object, once the session uses it.
+   */
+  getProxySettings(): { value: chrome.proxy.ProxyConfig; extensionId: string } | null {
+    return this.api.proxy.getSettings()
+  }
+
+  /**
+   * Hands an extension back a proxy it set while the host kept extensions'
+   * proxies itself (1.x kept chrome.proxy in memory only). It counts once
+   * that extension is loaded, as if the extension had set it, and is kept
+   * with the extension's other settings from then on. A proxy the extension
+   * set with this version stays as it is. Resolves true when it was put back.
+   */
+  restoreExtensionProxy(extensionId: string, value: chrome.proxy.ProxyConfig): Promise<boolean> {
+    return this.api.proxy.restore(extensionId, value)
+  }
+
+  /**
+   * What chrome.contentSettings says for a page, such as
+   * getContentSetting('notifications', 'https://a.example/'): 'allow',
+   * 'block', 'ask' or (cookies) 'session_only'. The host asks it from its own
+   * permission, window-open and download handlers; a change comes as a
+   * 'content-settings-changed' event. Undefined for an unknown type or URL.
+   */
+  getContentSetting(type: string, primaryUrl: string, secondaryUrl?: string): string | undefined {
+    return this.api.contentSettings.getContentSetting(type, primaryUrl, secondaryUrl)
+  }
+
+  /**
+   * chrome.fontSettings fonts and sizes in Electron's webPreferences names,
+   * for the host to pass to new tabs: Electron cannot change the fonts of a
+   * page that is already open. Changes come as a 'font-settings-changed' event
+   * with the same object.
+   */
+  getFontWebPreferences() {
+    return this.api.fontSettings.getWebPreferences()
+  }
+
+  /**
+   * Drops the settings, proxy and content setting rules an extension set, as
+   * Chrome does when it is uninstalled. Electron does not tell an uninstall
+   * from an unload, so the host calls this when it removes an extension.
+   */
+  async clearExtensionSettings(extensionId: string) {
+    await Promise.all([
+      this.api.contentSettings.forget(extensionId),
+      ExtensionSettings.for(this.ctx).forget(extensionId),
+    ])
+  }
+
+  /**
    * Gets map of special pages to extension override URLs.
    *
    * @see https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/manifest.json/chrome_url_overrides
    */
   getURLOverrides(): Record<string, string> {
     return this.ctx.store.urlOverrides
+  }
+
+  /**
+   * The bookmark tree chrome.bookmarks keeps for this session, as extensions
+   * see it. Each change an extension makes is emitted as 'bookmarks-changed'
+   * with a {@link BookmarkChange}, so a host with bookmarks of its own can
+   * follow them.
+   */
+  getBookmarkTree(): Promise<chrome.bookmarks.BookmarkTreeNode[]> {
+    return this.api.bookmarks.getTreeForHost()
+  }
+
+  /**
+   * Puts the host's own bookmarks in the Bookmarks bar, Other bookmarks and
+   * Mobile bookmarks folders, in place of what they held; a folder left out
+   * is kept. Extensions see it as an import (onImportBegan, onRemoved,
+   * onCreated, onImportEnded). Resolves with the new tree.
+   */
+  replaceBookmarks(folders: {
+    bookmarksBar?: BookmarkImportNode[]
+    other?: BookmarkImportNode[]
+    mobile?: BookmarkImportNode[]
+  }): Promise<chrome.bookmarks.BookmarkTreeNode[]> {
+    return this.api.bookmarks.replaceTree(folders)
+  }
+
+  /**
+   * Adds bookmarks to a folder (Other bookmarks unless `parentId` says
+   * otherwise), as an import. Resolves with the nodes added.
+   */
+  importBookmarks(
+    nodes: BookmarkImportNode[],
+    options?: { parentId?: string },
+  ): Promise<chrome.bookmarks.BookmarkTreeNode[]> {
+    return this.api.bookmarks.importNodes(nodes, options)
+  }
+
+  /**
+   * Deletes the visits chrome.history keeps, since `since` (milliseconds
+   * since the epoch), or all of them. Call it when the person clears their
+   * history in the host.
+   */
+  clearHistory(options: { since?: number } = {}): Promise<void> {
+    return this.api.history.clear(options.since)
+  }
+
+  /** The omnibox keywords of loaded extensions, for the host's address bar. */
+  getOmniboxKeywords(): OmniboxKeyword[] {
+    return this.api.omnibox.getKeywords()
+  }
+
+  /** The suggestion an extension set with omnibox.setDefaultSuggestion, if any. */
+  getOmniboxDefaultSuggestion(extensionId: string) {
+    return this.api.omnibox.getDefaultSuggestion(extensionId)
+  }
+
+  /** The person typed the extension's keyword: sends omnibox.onInputStarted. */
+  omniboxInputStarted(extensionId: string) {
+    this.api.omnibox.inputStarted(extensionId)
+  }
+
+  /**
+   * The text after the keyword changed: sends omnibox.onInputChanged and
+   * resolves with the suggestions the extension gives (empty when it gives
+   * none within `timeoutMs`, 5 seconds by default, or newer input came).
+   */
+  omniboxInputChanged(
+    extensionId: string,
+    text: string,
+    options: { timeoutMs?: number } = {},
+  ): Promise<OmniboxSuggestion[]> {
+    return this.api.omnibox.inputChanged(extensionId, text, options.timeoutMs)
+  }
+
+  /** The person pressed Enter or picked a suggestion: sends omnibox.onInputEntered. */
+  omniboxInputEntered(extensionId: string, text: string, disposition?: OmniboxDisposition) {
+    this.api.omnibox.inputEntered(extensionId, text, disposition)
+  }
+
+  /** The person left keyword mode: sends omnibox.onInputCancelled. */
+  omniboxInputCancelled(extensionId: string) {
+    this.api.omnibox.inputCancelled(extensionId)
+  }
+
+  /** The person deleted a deletable suggestion: sends omnibox.onDeleteSuggestion. */
+  omniboxDeleteSuggestion(extensionId: string, text: string) {
+    this.api.omnibox.deleteSuggestion(extensionId, text)
   }
 
   /**

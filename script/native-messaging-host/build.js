@@ -39,7 +39,7 @@ async function createSEA() {
   }
 }
 
-async function installConfig(extensionIds) {
+async function installConfig(extensionIds, userDataDir) {
   console.info(`Installing config…`)
 
   const hostName = 'com.crx.test'
@@ -57,6 +57,13 @@ async function installConfig(extensionIds) {
     const data = Buffer.from(JSON.stringify(manifest, null, 2))
     await fs.writeFile(filePath, data)
     return filePath
+  }
+
+  // The test runner gives each run its own userData folder, and the host is
+  // looked up in <userData>/NativeMessagingHosts.
+  if (userDataDir && process.platform !== 'win32') {
+    await writeManifest(path.join(userDataDir, 'NativeMessagingHosts'))
+    return
   }
 
   switch (process.platform) {
@@ -100,7 +107,7 @@ async function main() {
 
   const extensionIds = extensionIdsArg.split(',')
   await createSEA()
-  await installConfig(extensionIds)
+  await installConfig(extensionIds, process.argv[3])
 }
 
 main()

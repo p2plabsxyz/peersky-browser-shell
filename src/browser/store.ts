@@ -1,9 +1,24 @@
-import { BrowserWindow, webContents } from 'electron'
+import { BaseWindow, BrowserWindow, dialog, webContents } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { ContextMenuType } from './api/common'
 import { ChromeExtensionImpl } from './impl'
 import { ExtensionEvent } from './router'
+
+export interface DeclarativeActionState {
+  /** ShowAction or ShowPageAction matches: the action is enabled on the tab. */
+  show: boolean
+  /** SetIcon matches: PNG data URLs by size in pixels, from the highest priority rule. */
+  icon?: Record<string, string>
+}
+
+/** A window, not the webContents some hosts hand back next to it. */
+const isWindowLike = (value: unknown): value is Electron.BaseWindow =>
+  value instanceof BaseWindow ||
+  (!!value &&
+    typeof (value as any).isDestroyed === 'function' &&
+    typeof (value as any).getBounds === 'function' &&
+    typeof (value as any).executeJavaScript !== 'function')
 
 export class ExtensionStore extends EventEmitter {
   /** Tabs observed by the extensions system. */
@@ -27,6 +42,13 @@ export class ExtensionStore extends EventEmitter {
 
   tabDetailsCache = new Map<number, Partial<chrome.tabs.Tab>>()
   windowDetailsCache = new Map<number, Partial<chrome.windows.Window>>()
+
+  /**
+   * The URL each tab made by createTab was asked to open. The host starts
+   * loading before the tab is added, so chrome.tabs reads it from here to
+   * report it as pendingUrl until the page commits.
+   */
+  pendingUrls = new WeakMap<Electron.WebContents, string>()
 
   /** tabId:frameId → documentId */
   private documentIdMap = new Map<string, string>()
@@ -57,6 +79,35 @@ export class ExtensionStore extends EventEmitter {
   }
 
   urlOverrides: Record<string, string> = {}
+
+  /**
+   * What chrome.declarativeContent rules do to an extension's action on a tab
+   * while they match: ShowAction enables it there, SetIcon gives it an icon
+   * (PNG data URLs by size). Chrome layers these over the action's own state:
+   * a shown action is enabled even after action.disable(), and an icon the
+   * extension set for that tab with action.setIcon wins over the rule's.
+   */
+  private declarativeActions = new Map<string, Map<number, DeclarativeActionState>>()
+
+  getDeclarativeAction(extensionId: string, tabId: number): DeclarativeActionState | undefined {
+    return this.declarativeActions.get(extensionId)?.get(tabId)
+  }
+
+  /** Emits 'declarative-action-changed' (extensionId, tabId) when it changes. */
+  setDeclarativeAction(extensionId: string, tabId: number, state: DeclarativeActionState | undefined) {
+    let tabs = this.declarativeActions.get(extensionId)
+    const before = tabs?.get(tabId)
+    if (!state && !before) return
+    if (state && before && state.show === before.show && state.icon === before.icon) return
+    if (state) {
+      if (!tabs) this.declarativeActions.set(extensionId, (tabs = new Map()))
+      tabs.set(tabId, state)
+    } else if (tabs) {
+      tabs.delete(tabId)
+      if (tabs.size === 0) this.declarativeActions.delete(extensionId)
+    }
+    this.emit('declarative-action-changed', extensionId, tabId)
+  }
 
   /**
    * Tracks which window/tab triggered the most recent browser-action click for
@@ -132,6 +183,11 @@ export class ExtensionStore extends EventEmitter {
 
   addWindow(window: Electron.BaseWindow) {
     if (this.windows.has(window)) return
+    // Anything else here (an array, say) breaks every windows.* call for
+    // every extension.
+    if (!window || Array.isArray(window) || typeof (window as any).isDestroyed !== 'function') {
+      throw new TypeError('addWindow expects a BrowserWindow or BaseWindow')
+    }
 
     this.windows.add(window)
 
@@ -147,7 +203,14 @@ export class ExtensionStore extends EventEmitter {
       throw new Error('createWindow is not implemented')
     }
 
-    const win = await this.impl.createWindow(details)
+    const result: unknown = await this.impl.createWindow(details)
+    // Some hosts answer as createTab does, with [webContents, window].
+    const win = (
+      Array.isArray(result) ? result.find((item) => item instanceof BaseWindow) ?? result.find(isWindowLike) : result
+    ) as Electron.BaseWindow | undefined
+    if (!win || Array.isArray(win) || typeof (win as any).isDestroyed !== 'function') {
+      throw new Error('createWindow must return a BrowserWindow or BaseWindow')
+    }
 
     this.addWindow(win)
 
@@ -238,6 +301,7 @@ export class ExtensionStore extends EventEmitter {
       throw new Error('createTab must return a BrowserWindow')
     }
 
+    if (details.url) this.pendingUrls.set(tab, details.url)
     this.addTab(tab, window)
 
     return tab
@@ -287,12 +351,31 @@ export class ExtensionStore extends EventEmitter {
     extension: Electron.Extension,
     permissions: chrome.permissions.Permissions,
   ) {
-    if (typeof this.impl.requestPermissions !== 'function') {
-      // Default to allowed.
-      return true
+    if (typeof this.impl.requestPermissions === 'function') {
+      const result: unknown = await this.impl.requestPermissions(extension, permissions)
+      return typeof result === 'boolean' ? result : false
     }
-    const result: unknown = await this.impl.requestPermissions(extension, permissions)
-    return typeof result === 'boolean' ? result : false
+    // The host has no prompt of its own: ask with the system's, as Chrome asks
+    // with its own. Nothing is granted without the person's yes.
+    const lines = [
+      ...(permissions.permissions || []).map((p) => `• ${p}`),
+      ...(permissions.origins || []).map((o) => `• Read and change your data on ${o}`),
+    ]
+    const parent = this.getLastFocusedWindow()
+    const options: Electron.MessageBoxOptions = {
+      type: 'question',
+      buttons: ['Allow', 'Deny'],
+      defaultId: 1,
+      cancelId: 1,
+      message: `"${extension.name}" is asking for more access`,
+      detail: lines.join('\n'),
+      noLink: true,
+    }
+    const { response } =
+      parent && !parent.isDestroyed()
+        ? await dialog.showMessageBox(parent, options)
+        : await dialog.showMessageBox(options)
+    return response === 0
   }
 
   // Resolve WebContents id to the cached chrome.tabs tab id.

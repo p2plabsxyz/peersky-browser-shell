@@ -23,10 +23,12 @@ describe('chrome.notifications', () => {
       await browser.crx.exec('notifications.clear', notificationId)
     })
 
-    it('ignores invalid options', async () => {
+    it('answers with the id but shows nothing for incomplete options, as Chrome does', async () => {
       const notificationId = uuid()
       const result = await browser.crx.exec('notifications.create', notificationId, {})
-      expect(result).is.null
+      expect(result).to.equal(notificationId)
+      const list = await browser.crx.exec('notifications.getAll')
+      expect(list).to.deep.equal({})
     })
 
     it('ignores icons outside of extensions directory', async () => {
@@ -50,7 +52,7 @@ describe('chrome.notifications', () => {
       const notificationId = uuid()
       await browser.crx.exec('notifications.create', notificationId, basicOpts)
       const list = await browser.crx.exec('notifications.getAll')
-      expect(list).to.deep.equal([notificationId])
+      expect(list).to.deep.equal({ [notificationId]: true })
       await browser.crx.exec('notifications.clear', notificationId)
     })
   })

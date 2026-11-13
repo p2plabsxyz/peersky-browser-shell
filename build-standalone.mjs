@@ -56,6 +56,10 @@ await build({
   bundle: true,
   external: ['electron'],
   sourcemap: false,
+  // For the browser, esbuild takes NODE_ENV as "development" unless told,
+  // which logged every chrome.* call with its arguments and result to the
+  // extension's console.
+  define: { 'process.env.NODE_ENV': '"production"' },
 })
 
 // Browser-action CJS
@@ -67,6 +71,7 @@ await build({
   bundle: true,
   external: ['electron'],
   sourcemap: false,
+  define: { 'process.env.NODE_ENV': '"production"' },
 })
 
 // Browser-action ESM

@@ -141,35 +141,39 @@ describe('chrome.browserAction', () => {
         /** Chrome getBadgeBackgroundColor returns a ColorArray, not the hex passed to set. */
         expectedAfterSet: [202, 202, 202, 255],
       },
-      { method: 'BadgeText', detail: 'text' },
-      { method: 'Popup', detail: 'popup' },
+      { method: 'BadgeText', detail: 'text', clears: true },
+      {
+        method: 'Popup',
+        detail: 'popup',
+        value: 'popup.html',
+        /** Chrome's getPopup gives the popup's full URL. */
+        expected: () => `chrome-extension://${browser.extension.id}/popup.html`,
+      },
       { method: 'Title', detail: 'title' },
     ]
 
-    for (const { method, detail, value, expectedAfterSet } of props) {
+    for (const { method, detail, value, expectedAfterSet, expected, clears } of props) {
       it(`sets and gets '${detail}'`, async () => {
         const newValue = value || uuid()
         await browser.crx.exec(`browserAction.set${method}`, { [detail]: newValue })
-        const result = await browser.crx.exec(`browserAction.get${method}`)
-        const expected = expectedAfterSet ?? newValue
+        const result = await browser.crx.exec(`browserAction.get${method}`, {})
         if (expectedAfterSet) {
-          expect(result).to.deep.equal(expected)
+          expect(result).to.deep.equal(expectedAfterSet)
         } else {
-          expect(result).to.equal(expected)
+          expect(result).to.equal(expected ? expected() : newValue)
         }
       })
 
+      // Chrome clears only the badge text with null; the other setters
+      // require their value.
+      if (!clears) continue
       it(`restores initial values for '${detail}'`, async () => {
         const newValue = value || uuid()
-        const initial = await browser.crx.exec(`browserAction.get${method}`)
+        const initial = await browser.crx.exec(`browserAction.get${method}`, {})
         await browser.crx.exec(`browserAction.set${method}`, { [detail]: newValue })
         await browser.crx.exec(`browserAction.set${method}`, { [detail]: null })
-        const result = await browser.crx.exec(`browserAction.get${method}`)
-        if (expectedAfterSet) {
-          expect(result).to.deep.equal(initial)
-        } else {
-          expect(result).to.equal(initial)
-        }
+        const result = await browser.crx.exec(`browserAction.get${method}`, {})
+        expect(result).to.equal(initial)
       })
     }
 

@@ -1,209 +1,220 @@
 import { ExtensionContext } from '../context'
-import { ExtensionEvent } from '../router'
-
-type ProxySettingDetails = {
-  value: chrome.proxy.ProxyConfig
-  levelOfControl: chrome.types.LevelOfControl
-  incognitoSpecific: boolean
-}
+import { ArgSpec } from './arg-check'
+import { ExtensionSettings, serveChromeSetting } from './chrome-setting'
 
 const PAC_DATA_MIME_TYPE = 'application/x-ns-proxy-autoconfig'
-const PROXY_SCHEMES = ['http', 'https', 'socks4', 'socks5']
+const MODES = ['direct', 'auto_detect', 'pac_script', 'fixed_servers', 'system'] as const
+const SCHEMES = ['http', 'https', 'quic', 'socks4', 'socks5'] as const
+const DEFAULT_PORTS: Record<string, number> = { http: 80, https: 443, quic: 443, socks4: 1080, socks5: 1080 }
+/** In Chrome's order, which decides which pair an error names. */
+const SERVER_FIELDS = ['singleProxy', 'proxyForHttp', 'proxyForHttps', 'proxyForFtp', 'fallbackProxy'] as const
+const MAX_PAC_BYTES = 2 * 1024 * 1024
+const MAX_BYPASS_ENTRIES = 1000
 
+const PROXY_SERVER: ArgSpec = {
+  type: 'object',
+  ref: 'proxy.ProxyServer',
+  optional: true,
+  properties: {
+    scheme: { type: 'string', enum: SCHEMES, ref: 'proxy.Scheme', optional: true },
+    host: { type: 'string' },
+    port: { type: 'integer', optional: true },
+  },
+}
+
+const PROXY_CONFIG: ArgSpec = {
+  type: 'object',
+  ref: 'proxy.ProxyConfig',
+  properties: {
+    mode: { type: 'string', enum: MODES, ref: 'proxy.Mode' },
+    rules: {
+      type: 'object',
+      ref: 'proxy.ProxyRules',
+      optional: true,
+      properties: {
+        singleProxy: PROXY_SERVER,
+        proxyForHttp: PROXY_SERVER,
+        proxyForHttps: PROXY_SERVER,
+        proxyForFtp: PROXY_SERVER,
+        fallbackProxy: PROXY_SERVER,
+        bypassList: { type: 'array', items: { type: 'string' }, optional: true },
+      },
+    },
+    pacScript: {
+      type: 'object',
+      ref: 'proxy.PacScript',
+      optional: true,
+      properties: {
+        url: { type: 'string', optional: true },
+        data: { type: 'string', optional: true },
+        mandatory: { type: 'boolean', optional: true },
+      },
+    },
+  },
+}
+
+const isAscii = (s: string) => /^[\x00-\x7f]*$/.test(s)
+
+type Server = { scheme: string; host: string; port: number }
+
+/**
+ * Turns an extension's proxy config into the one Chrome keeps and reports
+ * back: servers get their scheme and port filled in, and only what the mode
+ * uses stays. Throws Chrome's error for a config Chrome refuses.
+ */
+export function normalizeProxyConfig(config: chrome.proxy.ProxyConfig): chrome.proxy.ProxyConfig {
+  const mode = config.mode
+  if (mode === 'direct' || mode === 'auto_detect' || mode === 'system') return { mode }
+
+  if (mode === 'pac_script') {
+    const pac = config.pacScript
+    const url = typeof pac?.url === 'string' && pac.url ? pac.url : undefined
+    const data = typeof pac?.data === 'string' && pac.data ? pac.data : undefined
+    if (!url && !data) {
+      throw new Error(
+        "Proxy mode 'pac_script' requires a 'pacScript' field with either a 'url' field or a 'data' field.",
+      )
+    }
+    const mandatory = pac?.mandatory === true
+    if (url) {
+      if (!isAscii(url)) throw new Error("'pacScript.url' supports only ASCII URLs (encode URLs in Punycode format).")
+      if (url.length > MAX_PAC_BYTES) throw new Error('Invalid invocation')
+      return { mode, pacScript: { url, mandatory } }
+    }
+    if (!isAscii(data!)) throw new Error("'pacScript.data' supports only ASCII code(encode URLs in Punycode format).")
+    if (data!.length > MAX_PAC_BYTES) throw new Error('Invalid invocation')
+    return { mode, pacScript: { data, mandatory } }
+  }
+
+  // fixed_servers
+  const rules = config.rules
+  const present = SERVER_FIELDS.filter((field) => rules?.[field])
+  if (!rules || present.length === 0) throw new Error("Proxy mode 'fixed_servers' requires a 'rules' field.")
+  if (rules.singleProxy) {
+    const other = present.find((field) => field !== 'singleProxy')
+    if (other) throw new Error(`Proxy rule for singleProxy and ${other} cannot be set at the same time.`)
+  }
+  const out: chrome.proxy.ProxyRules = {}
+  for (const field of present) out[field] = normalizeServer(rules[field]!)
+  if (Array.isArray(rules.bypassList) && rules.bypassList.length > 0) {
+    if (rules.bypassList.length > MAX_BYPASS_ENTRIES) throw new Error('Invalid invocation')
+    for (const entry of rules.bypassList) {
+      if (!isAscii(entry)) {
+        throw new Error("'rules.bypassList' supports only ASCII URLs (encode URLs in Punycode format).")
+      }
+    }
+    out.bypassList = rules.bypassList.map((entry) => entry.slice(0, 1024))
+  }
+  return { mode, rules: out }
+}
+
+function normalizeServer(server: chrome.proxy.ProxyServer): Server {
+  const host = server.host
+  if (!host) throw new Error("Invalid 'rules.???.host' entry. Hostname cannot be empty.")
+  if (!isAscii(host)) {
+    throw new Error(
+      `Invalid 'rules.???.host' entry '${host}'. 'host' field supports only ASCII URLs (encode URLs in Punycode format).`,
+    )
+  }
+  // Chrome drops a server it cannot read and goes direct while the extension
+  // thinks it is proxied. Refusing it says so instead, and keeps a host from
+  // ending one Electron proxy rule and starting another.
+  if (host.length > 255 || /[\s;=,/@?#\\[\]]/.test(host.replace(/^\[|\]$/g, ''))) {
+    throw new Error("Invalid 'rules' specified.")
+  }
+  // QUIC proxies are gone from Chrome; it keeps them as HTTP ones.
+  const scheme = !server.scheme || server.scheme === 'quic' ? 'http' : server.scheme
+  const defaultPort = DEFAULT_PORTS[server.scheme || 'http']
+  const port =
+    Number.isInteger(server.port) && server.port! > 0 && server.port! < 65536 ? (server.port as number) : defaultPort
+  return { scheme, host: host.replace(/^\[|\]$/g, ''), port }
+}
+
+const formatServer = ({ scheme, host, port }: Server) =>
+  `${scheme}://${host.includes(':') ? `[${host}]` : host}:${port}`
+
+/** The Electron config for what Chrome keeps; undefined means the system's. */
+export function toElectronProxyConfig(config: chrome.proxy.ProxyConfig | undefined): Electron.ProxyConfig {
+  if (!config || config.mode === 'system') return { mode: 'system' }
+  if (config.mode === 'direct' || config.mode === 'auto_detect') return { mode: config.mode }
+  if (config.mode === 'pac_script') {
+    const { url, data } = config.pacScript || {}
+    const pacScript = url
+      ? url
+      : `data:${PAC_DATA_MIME_TYPE};base64,${Buffer.from(data || '', 'utf8').toString('base64')}`
+    return { mode: 'pac_script', pacScript }
+  }
+  const rules = config.rules || {}
+  let proxyRules: string
+  if (rules.singleProxy) {
+    proxyRules = formatServer(rules.singleProxy as Server)
+  } else {
+    // Each server keeps its own scheme: without one, Chromium took an HTTPS
+    // proxy for a plain HTTP one and SOCKS5 for SOCKS4. fallbackProxy goes in
+    // the "socks=" slot, which Chromium reads as "for everything else".
+    proxyRules = (
+      [
+        ['http', rules.proxyForHttp],
+        ['https', rules.proxyForHttps],
+        ['ftp', rules.proxyForFtp],
+        ['socks', rules.fallbackProxy],
+      ] as const
+    )
+      .filter(([, server]) => server)
+      .map(([slot, server]) => `${slot}=${formatServer(server as Server)}`)
+      .join(';')
+  }
+  const out: Electron.ProxyConfig = { mode: 'fixed_servers', proxyRules }
+  // Electron reads proxyBypassRules as a comma-separated list.
+  if (rules.bypassList?.length) out.proxyBypassRules = rules.bypassList.join(',')
+  return out
+}
+
+/**
+ * chrome.proxy.settings, a types.ChromeSetting kept per session like
+ * chrome.privacy's: the most recently installed extension that set a proxy is
+ * the one in control, and its proxy comes back when it loads after a restart.
+ */
 export class ProxyAPI {
-  private currentConfig: chrome.proxy.ProxyConfig = { mode: 'system' }
-  private controllingExtensionId?: string
+  private settings: ExtensionSettings
 
   constructor(private ctx: ExtensionContext) {
-    const handle = this.ctx.router.apiHandler()
-    handle('proxy.settings.get', this.settingsGet, {
-      extensionContext: true,
+    this.settings = ExtensionSettings.for(ctx)
+    serveChromeSetting(ctx, this.settings, {
+      name: 'proxy.settings',
+      key: 'proxy',
       permission: 'proxy',
+      defaultValue: () => ({ mode: 'system' }),
+      valueSpec: PROXY_CONFIG,
+      accept: (value: chrome.proxy.ProxyConfig) => normalizeProxyConfig(value),
     })
-    handle('proxy.settings.set', this.settingsSet, {
-      extensionContext: true,
-      permission: 'proxy',
-    })
-    handle('proxy.settings.clear', this.settingsClear, {
-      extensionContext: true,
-      permission: 'proxy',
+    this.settings.onChange(async ({ key, value }) => {
+      if (key !== 'proxy') return
+      await this.ctx.session.setProxy(toElectronProxyConfig(value as chrome.proxy.ProxyConfig | undefined))
+      this.ctx.emit('proxy-changed', this.getSettings())
     })
   }
 
-  private settingsGet = async (
-    { extension }: ExtensionEvent,
-    _details?: chrome.types.ChromeSettingGetDetails,
-  ): Promise<ProxySettingDetails> => {
-    const levelOfControl: chrome.types.LevelOfControl =
-      !this.controllingExtensionId
-        ? 'controllable_by_this_extension'
-        : this.controllingExtensionId === extension.id
-          ? 'controlled_by_this_extension'
-          : 'controlled_by_other_extensions'
-
-    return {
-      value: this.currentConfig,
-      levelOfControl,
-      incognitoSpecific: false,
-    }
+  /** The proxy an extension set that counts now and that extension, or null when none does. */
+  getSettings(): { value: chrome.proxy.ProxyConfig; extensionId: string } | null {
+    const current = this.settings.effective('proxy')
+    if (!current) return null
+    return { value: JSON.parse(JSON.stringify(current.value)), extensionId: current.controller }
   }
 
-  private settingsSet = async (
-    { extension }: ExtensionEvent,
-    details: chrome.types.ChromeSettingSetDetails<chrome.proxy.ProxyConfig>,
-  ): Promise<void> => {
-    const config = (details?.value || { mode: 'system' }) as chrome.proxy.ProxyConfig
-    console.log(
-      `[ProxyAPI] proxy.settings.set from extension=${extension.id} mode=${config?.mode ?? 'system'}`,
-    )
-    await this.applyProxyConfig(config)
-    this.currentConfig = config
-    this.controllingExtensionId = extension.id
-    this.emitSettingsChange()
+  /**
+   * Puts back a proxy an extension set while the host kept it. It counts once
+   * the extension is loaded, as if the extension had set it then; one the
+   * extension set here itself stays. Resolves true when it was put back.
+   */
+  async restore(extensionId: string, value: chrome.proxy.ProxyConfig): Promise<boolean> {
+    if (typeof extensionId !== 'string' || !extensionId) throw new TypeError('An extension id is required.')
+    return this.settings.restore(extensionId, 'proxy', normalizeProxyConfig(value))
   }
 
-  private settingsClear = async ({ extension }: ExtensionEvent): Promise<void> => {
-    if (this.controllingExtensionId && this.controllingExtensionId !== extension.id) {
-      console.log(
-        `[ProxyAPI] proxy.settings.clear denied for extension=${extension.id} controlledBy=${this.controllingExtensionId}`,
-      )
-      return
-    }
-
-    await this.ctx.session.setProxy({ mode: 'system' })
-    this.currentConfig = { mode: 'system' }
-    this.controllingExtensionId = undefined
-    this.emitSettingsChange()
-  }
-
-  private async applyProxyConfig(config: chrome.proxy.ProxyConfig): Promise<void> {
-    const mode = config?.mode || 'system'
-
-    if (mode === 'direct') {
-      console.log('[ProxyAPI] session.setProxy direct')
-      await this.ctx.session.setProxy({ mode: 'direct' })
-      return
-    }
-
-    if (mode === 'system') {
-      console.log('[ProxyAPI] session.setProxy system')
-      await this.ctx.session.setProxy({ mode: 'system' })
-      return
-    }
-
-    if (mode === 'pac_script') {
-      const pacScript = this.resolvePacScript(config.pacScript)
-      console.log('[ProxyAPI] session.setProxy pac_script', {
-        hasPacUrl: !!pacScript && !!config.pacScript?.url,
-        hasPacData: !!pacScript && !!config.pacScript?.data,
-      })
-      await this.ctx.session.setProxy({
-        mode: 'pac_script',
-        pacScript,
-      })
-      return
-    }
-
-    if (mode === 'fixed_servers') {
-      const proxyRules = this.resolveProxyRules(config.rules)
-      // Chrome refuses rules it can't read. Setting none sent everything out
-      // directly while the extension went on thinking its proxy was on.
-      if (!proxyRules) throw new Error("Invalid 'rules' specified.")
-      const proxyBypassRules = this.resolveBypassRules(config.rules)
-      console.log('[ProxyAPI] session.setProxy fixed_servers', {
-        proxyRules,
-        proxyBypassRules,
-      })
-      await this.ctx.session.setProxy({
-        mode: 'fixed_servers',
-        proxyRules,
-        proxyBypassRules,
-      })
-      return
-    }
-
-    console.log('[ProxyAPI] session.setProxy unknown mode', { mode })
-    await this.ctx.session.setProxy({ mode: mode as Electron.ProxyConfig['mode'] })
-  }
-
-  private resolvePacScript(
-    pacScript?: chrome.proxy.PacScript,
-  ): string | undefined {
-    if (!pacScript) return undefined
-    if (pacScript.url) return pacScript.url
-    if (!pacScript.data) return undefined
-
-    const base64Data = Buffer.from(pacScript.data, 'utf8').toString('base64')
-    return `data:${PAC_DATA_MIME_TYPE};base64,${base64Data}`
-  }
-
-  // Each server with its own scheme, the way Chrome writes them: without one,
-  // Chromium took an HTTPS proxy for a plain HTTP one and SOCKS5 for SOCKS4.
-  // fallbackProxy goes in the "socks=" slot, which Chromium reads as "for
-  // everything else", whatever the server's scheme.
-  private resolveProxyRules(rules?: chrome.proxy.ProxyRules): string | undefined {
-    if (!rules) return undefined
-    if (rules.singleProxy) return this.formatProxyUri(rules.singleProxy)
-
-    const segments: string[] = []
-    for (const [key, server] of [
-      ['http', rules.proxyForHttp],
-      ['https', rules.proxyForHttps],
-      ['ftp', rules.proxyForFtp],
-      ['socks', rules.fallbackProxy],
-    ] as const) {
-      const uri = this.formatProxyUri(server)
-      if (uri) segments.push(`${key}=${uri}`)
-    }
-
-    if (segments.length === 0) return undefined
-    return segments.join(';')
-  }
-
-  private resolveBypassRules(rules?: chrome.proxy.ProxyRules): string | undefined {
-    const bypassList = rules?.bypassList
-    if (!bypassList || bypassList.length === 0) return undefined
-    // Electron docs: `proxyBypassRules` is a comma-separated list.
-    return bypassList.join(',')
-  }
-
-  private formatHostPort(server?: chrome.proxy.ProxyServer): string | undefined {
-    if (typeof server?.host !== 'string' || !server.host) return undefined
-    // A host that could end one rule and start another is not a host.
-    if (/[\s;=,/@?#]/.test(server.host)) return undefined
-
-    const isIpv6 = server.host.includes(':') && !server.host.startsWith('[')
-    const host = isIpv6 ? `[${server.host}]` : server.host
-    const port =
-      Number.isInteger(server.port) && server.port! > 0 && server.port! < 65536 ? `:${server.port}` : ''
-    return `${host}${port}`
-  }
-
-  private formatProxyUri(server?: chrome.proxy.ProxyServer): string | undefined {
-    const hostPort = this.formatHostPort(server)
-    if (!hostPort) return undefined
-
-    const scheme = server?.scheme || 'http'
-    if (!PROXY_SCHEMES.includes(scheme)) return undefined
-    return `${scheme}://${hostPort}`
-  }
-
-  private emitSettingsChange(): void {
-    this.ctx.router.sendEventForEachListener('proxy.settings.onChange', (extensionId) => {
-      const levelOfControl: chrome.types.LevelOfControl =
-        !this.controllingExtensionId
-          ? 'controllable_by_this_extension'
-          : this.controllingExtensionId === extensionId
-            ? 'controlled_by_this_extension'
-            : 'controlled_by_other_extensions'
-
-      return [
-        {
-          value: this.currentConfig,
-          levelOfControl,
-          incognitoSpecific: false,
-        },
-      ]
-    })
+  /** The proxy config that counts now, as chrome.proxy.settings.get reports it. */
+  getConfig(): chrome.proxy.ProxyConfig {
+    const current = this.settings.effective('proxy')
+    return current ? JSON.parse(JSON.stringify(current.value)) : { mode: 'system' }
   }
 }

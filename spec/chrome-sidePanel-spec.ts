@@ -64,7 +64,7 @@ describe('chrome.sidePanel', () => {
     expect(defaults.tabId).to.equal(undefined)
   })
 
-  it('getOptions echoes the queried tabId when only global options exist', async () => {
+  it('getOptions gives the global options, without a tabId, for a tab with none of its own', async () => {
     const tabId = browser.webContents.id
     await browser.crx.exec('sidePanel.setOptions', {
       path: 'sidepanel.html',
@@ -74,7 +74,8 @@ describe('chrome.sidePanel', () => {
     const forTab = await browser.crx.exec('sidePanel.getOptions', { tabId })
     expect(forTab.path).to.equal('sidepanel.html')
     expect(forTab.enabled).to.equal(true)
-    expect(forTab.tabId).to.equal(tabId)
+    // Chrome 157 leaves tabId out here.
+    expect(forTab.tabId).to.equal(undefined)
   })
 
   it('setPanelBehavior and getPanelBehavior round-trip', async () => {
@@ -169,13 +170,19 @@ describe('chrome.sidePanel', () => {
     expect(opens).to.have.lengthOf(0)
   })
 
-  it('rejects invalid panel paths', async () => {
+  it('keeps any path, as Chrome does, and refuses to open one outside the extension', async () => {
+    await sidePanelApi().setOptions(asEvent(), { path: 'missing-panel.html' })
+    const options = await sidePanelApi().getOptions(asEvent(), {})
+    expect(options.path).to.equal('missing-panel.html')
+    noteUserGesture()
     let message = ''
     try {
-      await sidePanelApi().setOptions(asEvent(), { path: 'missing-panel.html' })
+      await sidePanelApi().open(asEvent(), { windowId: browser.window.id })
     } catch (err: any) {
       message = String(err?.message || err)
     }
     expect(message).to.match(/Invalid side panel path/i)
+    expect(opens).to.have.lengthOf(0)
+    await sidePanelApi().setOptions(asEvent(), { path: 'sidepanel.html' })
   })
 })

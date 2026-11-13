@@ -155,8 +155,9 @@ module.exports = {
     `chrome.tabs.remove` is invoked by an extension.
     - `webContents` Electron.WebContents - The tab to be removed.
     - `browserWindow` Electron.BrowserWindow - The window which owns the tab.
-  - `createWindow(details) => Promise<Electron.BrowserWindow>`
+  - `createWindow(details) => Promise<Electron.BaseWindow | [Electron.WebContents, Electron.BaseWindow]>`
     (optional) - Called when `chrome.windows.create` is invoked by an extension.
+    Resolves with the window, or with the first tab's webContents and the window.
     - `details` [chrome.windows.CreateData](https://developer.chrome.com/docs/extensions/reference/windows/#method-create)
   - `removeWindow(browserWindow) => Promise<Electron.BrowserWindow>`
     (optional) - Called when `chrome.windows.remove` is invoked by an extension.
@@ -337,202 +338,80 @@ browser-action-list::part(action):hover {
 
 ## Supported `chrome.*` APIs
 
-The following APIs are supported, in addition to [those already built-in to Electron.](https://www.electronjs.org/docs/api/extensions)
+Every API below answers as Chrome 157 does: the same values, events, argument checks and error messages. Two test extensions in `spec/fixtures/chrome-api-probe` and `spec/fixtures/chrome-api-probe-peer` were run in Chrome for Testing 157, and what Chrome answered is kept in `spec/fixtures/chrome-api-probe/chrome-results.json`. `spec/chrome-api-parity-spec.ts` runs the same extensions in the shell on every test run and fails on any answer that differs. The few places where the shell differs on purpose are listed, each with its reason, in `spec/fixtures/chrome-api-probe/known-differences.json`.
 
-<details>
-<summary>Click to reveal supported APIs</summary>
+An API shows up only for an extension that asks for its permission, as in Chrome, and every call is checked again in the main process. An extension sees a tab's url, title and favicon only with the `tabs` permission, host access to that page, or activeTab. Host access follows Chrome's match patterns, and activeTab is granted when the person clicks the extension's toolbar button, a context menu item of its, its keyboard shortcut or its omnibox keyword.
 
-### [`chrome.action`](https://developer.chrome.com/extensions/action)
-
-- [x] chrome.action.setTitle
-- [x] chrome.action.getTitle
-- [x] chrome.action.setIcon
-- [x] chrome.action.setPopup
-- [x] chrome.action.getPopup
-- [x] chrome.action.setBadgeText
-- [x] chrome.action.getBadgeText
-- [x] chrome.action.setBadgeBackgroundColor
-- [x] chrome.action.getBadgeBackgroundColor
-- [ ] chrome.action.enable
-- [ ] chrome.action.disable
-- [x] chrome.action.openPopup
-- [x] chrome.action.onClicked
-
-### [`chrome.commands`](https://developer.chrome.com/extensions/commands)
-
-- [ ] chrome.commands.getAll
-- [ ] chrome.commands.onCommand
-
-### [`chrome.cookies`](https://developer.chrome.com/extensions/cookies)
-
-- [x] chrome.cookies.get
-- [x] chrome.cookies.getAll
-- [x] chrome.cookies.set
-- [x] chrome.cookies.remove
-- [x] chrome.cookies.getAllCookieStores
-- [x] chrome.cookies.onChanged
-
-### [`chrome.contextMenus`](https://developer.chrome.com/extensions/contextMenus)
-
-- [x] chrome.contextMenus.create
-- [ ] chrome.contextMenus.update
-- [x] chrome.contextMenus.remove
-- [x] chrome.contextMenus.removeAll
-- [x] chrome.contextMenus.onClicked
-
-### [`chrome.notifications`](https://developer.chrome.com/extensions/notifications)
-
-- [x] chrome.notifications.clear
-- [x] chrome.notifications.create
-- [x] chrome.notifications.getAll
-- [x] chrome.notifications.getPermissionLevel
-- [x] chrome.notifications.update
-- [ ] chrome.notifications.onButtonClicked
-- [x] chrome.notifications.onClicked
-- [x] chrome.notifications.onClosed
-
-See [Electron's Notification tutorial](https://www.electronjs.org/docs/tutorial/notifications) for how to support them in your app.
-
-### [`chrome.runtime`](https://developer.chrome.com/extensions/runtime)
-
-- [x] chrome.runtime.connect
-- [x] chrome.runtime.getBackgroundPage
-- [x] chrome.runtime.getManifest
-- [x] chrome.runtime.getURL
-- [x] chrome.runtime.id
-- [x] chrome.runtime.lastError
-- [x] chrome.runtime.onConnect
-- [x] chrome.runtime.onInstalled
-- [x] chrome.runtime.onMessage
-- [x] chrome.runtime.onStartup
-- [x] chrome.runtime.onSuspend
-- [x] chrome.runtime.onSuspendCanceled
-- [x] chrome.runtime.openOptionsPage
-- [x] chrome.runtime.sendMessage
-
-### [`chrome.storage`](https://developer.chrome.com/extensions/storage)
-
-- [x] chrome.storage.local
-- [x] chrome.storage.managed - fallback to `local`
-- [x] chrome.storage.sync - persisted under `extension-sync` in the app userData directory (separate from `local`; encrypted with Electron `safeStorage` when available)
-
-### [`chrome.tabs`](https://developer.chrome.com/extensions/tabs)
-
-- [x] chrome.tabs.get
-- [x] chrome.tabs.getCurrent
-- [x] chrome.tabs.connect
-- [x] chrome.tabs.sendMessage
-- [x] chrome.tabs.create
-- [x] chrome.tabs.duplicate
-- [x] chrome.tabs.query
-- [x] chrome.tabs.highlight
-- [x] chrome.tabs.update
-- [x] chrome.tabs.move
-- [x] chrome.tabs.reload
-- [x] chrome.tabs.remove
-- [ ] chrome.tabs.detectLanguage
-- [x] chrome.tabs.captureVisibleTab
-- [x] chrome.tabs.executeScript
-- [x] chrome.tabs.insertCSS
-- [x] chrome.tabs.setZoom
-- [x] chrome.tabs.getZoom
-- [x] chrome.tabs.setZoomSettings
-- [x] chrome.tabs.getZoomSettings
-- [ ] chrome.tabs.discard
-- [x] chrome.tabs.goForward
-- [x] chrome.tabs.goBack
-- [x] chrome.tabs.onCreated
-- [x] chrome.tabs.onUpdated
-- [x] chrome.tabs.onMoved
-- [x] chrome.tabs.onActivated
-- [x] chrome.tabs.onHighlighted
-- [ ] chrome.tabs.onDetached
-- [ ] chrome.tabs.onAttached
-- [x] chrome.tabs.onRemoved
-- [ ] chrome.tabs.onReplaced
-- [x] chrome.tabs.onZoomChange
-
-> [!NOTE]
-> Electron does not provide tab functionality such as discarded, frozen, or group IDs. If an
-> application developer wishes to implement this functionality, emit a `"tab-updated"` event on the
-> tab's WebContents for `chrome.tabs.onUpdated` to be made aware of changes. Tab properties can be
-> assigned using the `assignTabDetails` option provided to the `ElectronChromeExtensions`
-> constructor.
-
-### [`chrome.webNavigation`](https://developer.chrome.com/extensions/webNavigation)
-
-- [x] chrome.webNavigation.getFrame (Electron 12+)
-- [x] chrome.webNavigation.getAllFrames (Electron 12+)
-- [x] chrome.webNavigation.onBeforeNavigate
-- [x] chrome.webNavigation.onCommitted
-- [x] chrome.webNavigation.onDOMContentLoaded
-- [x] chrome.webNavigation.onCompleted
-- [ ] chrome.webNavigation.onErrorOccurred
-- [x] chrome.webNavigation.onCreateNavigationTarget
-- [ ] chrome.webNavigation.onReferenceFragmentUpdated
-- [ ] chrome.webNavigation.onTabReplaced
-- [x] chrome.webNavigation.onHistoryStateUpdated
-
-### [`chrome.windows`](https://developer.chrome.com/extensions/windows)
-
-- [x] chrome.windows.get
-- [x] chrome.windows.getCurrent
-- [x] chrome.windows.getLastFocused
-- [x] chrome.windows.getAll
-- [x] chrome.windows.create
-- [x] chrome.windows.update
-- [x] chrome.windows.remove
-- [x] chrome.windows.onCreated
-- [x] chrome.windows.onRemoved
-- [x] chrome.windows.onFocusChanged
-- [x] chrome.windows.onBoundsChanged
-</details>
-
-### Peersky fork: additional `chrome.*` coverage
-
-These APIs are implemented in this package (beyond the checklist above). See the source under `src/browser/api/` for details.
-
-| API | Notes |
+| API | Notes for the host |
 | --- | --- |
-| [`chrome.debugger`](https://developer.chrome.com/docs/extensions/reference/debugger/) | Attach/detach and route CDP events (requires `debugger` permission). |
-| [`chrome.identity`](https://developer.chrome.com/docs/extensions/reference/identity/) | `launchWebAuthFlow` (OAuth via hidden `BrowserWindow`). `getAuthToken` is intentionally unsupported; use web-based OAuth. Initial `options.url` must be `https`, or `http` on loopback (`localhost`, `127.0.0.1`, `::1`) for local test servers. |
-| [`chrome.proxy`](https://developer.chrome.com/docs/extensions/reference/proxy/) | Maps Chrome `ProxyConfig` to Electron `session.setProxy`. `proxy.settings.clear` only clears when the caller is the extension currently controlling proxy settings. |
-| [`chrome.declarativeNetRequest`](https://developer.chrome.com/docs/extensions/reference/declarativeNetRequest/) | Rule evaluation for static/dynamic/session rules; integrates with the app’s `webRequest` bridge for blocking/redirects. |
-| [`chrome.webRequest`](https://developer.chrome.com/docs/extensions/reference/webRequest/) | Requires app-side hooks (`notifyWebRequest*` methods on `ElectronChromeExtensions`). |
-| [`chrome.scripting`](https://developer.chrome.com/docs/extensions/reference/scripting/) | Supports `executeScript`/`insertCSS` plus dynamic registry APIs: `registerContentScripts`, `getRegisteredContentScripts`, `updateContentScripts`, `unregisterContentScripts` (persisted via extension state store). |
-| [`chrome.extension`](https://developer.chrome.com/docs/extensions/reference/extension/) | Best-effort `getViews`: metadata objects with `id`, `type`, `windowId`, `url`. `tabId` is set only for `type: "tab"` (page views), so `fetchProperties.tabId` matches Chrome-style filtering. In a popup with `fetchProperties.type === 'popup'`, the renderer may add `self: true` when the IPC list omits or matches by URL — not live `Window` instances. |
-| [`chrome.management`](https://developer.chrome.com/docs/extensions/reference/management/) | Limited extension metadata helpers. |
-| [`chrome.permissions`](https://developer.chrome.com/docs/extensions/reference/permissions/) | Runtime grants update an internal permission map; router permission checks honor **optional** permissions granted via `chrome.permissions.request`, not only `manifest.permissions`. |
+| `chrome.action`, `chrome.browserAction` | Toolbar state for `<browser-action-list>`. `isActionOnToolbar` hook. |
+| `chrome.alarms` | Kept per session. Chrome's 30 second minimum for extensions that are not unpacked (`getExtensionInstallType` hook). |
+| `chrome.bookmarks` | A tree like Chrome's, kept per session. Follow changes with the `bookmarks-changed` event; push the host's own bookmarks with `replaceBookmarks()` or `importBookmarks()`. |
+| `chrome.browsingData` | Removes the session's data. Return the host's own pages from the `getProtectedOrigins` hook so they are never cleared. |
+| `chrome.commands` | Call `api.commands.execute(extensionId, name)` when the person presses a shortcut. |
+| `chrome.contentSettings` | Rules kept per session. JavaScript, images and cookies apply on the `webRequest` bridge; ask `getContentSetting(type, url)` from the host's permission and window-open handlers. The `getContentSetting` hook gives the host's own site settings where no extension rule decides. |
+| `chrome.contextMenus` | `getContextMenuItems(webContents, params)` builds the items. |
+| `chrome.cookies` | Only cookies of hosts the extension has access to. |
+| `chrome.debugger` | Only tabs and their own frames and workers, never browser pages or other extensions' pages, and only the DevTools commands Chrome allows an extension. |
+| `chrome.declarativeContent` | Rules kept per session; ShowAction, SetIcon and RequestContentScript. |
+| `chrome.declarativeNetRequest` | Static, dynamic and session rules on the `webRequest` bridge. A `regexFilter` that could backtrack for long runs under a time limit. |
+| `chrome.desktopCapture` | `chooseDesktopMedia` hook for the host's picker; without it every request is cancelled. |
+| `chrome.downloads` | Kept per session. `setDownloadUiEnabled` hook. |
+| `chrome.extension`, `chrome.runtime` | `onInstalled`, `onStartup`, `onExtensionLoaded` and `onEnabled` fire as in Chrome. |
+| `chrome.fontSettings` | Kept per session. Pass `getFontWebPreferences()` to new tabs. |
+| `chrome.history`, `chrome.topSites` | Visits are recorded only while an extension with `history` or `topSites` is loaded. Call `clearHistory()` from the host's own "clear history". |
+| `chrome.i18n`, `chrome.idle`, `chrome.power`, `chrome.storage` | `local` and `session` are Electron's own stores, shared with content scripts as in Chrome; `sync` is the shell's, encrypted with `safeStorage`; `managed` reads the `getManagedStorage` hook. |
+| `chrome.identity` | `launchWebAuthFlow`; no Google account sign-in. |
+| `chrome.management` | `setExtensionEnabled`, `confirmUninstall` and `uninstallExtension` hooks. |
+| `chrome.notifications` | Shown with Electron's `Notification`. |
+| `chrome.offscreen` | One document per extension, in a view outside any window. |
+| `chrome.omnibox` | Drive it from the address bar with `getOmniboxKeywords()`, `omniboxInputStarted()`, `omniboxInputChanged()`, `omniboxInputEntered()` and `omniboxInputCancelled()`. |
+| `chrome.pageCapture`, `chrome.tabCapture` | |
+| `chrome.permissions` | Optional permissions need a user gesture and the person's yes (the `requestPermissions` hook, or a system dialog), and are kept across restarts. |
+| `chrome.privacy` | Kept per session. Read the rest with `getPrivacySettings()`. |
+| `chrome.proxy` | Applied with `session.setProxy` and kept per session; an extension's proxy counts again once it loads after a restart. `getProxySettings()` and the `proxy-changed` event tell the host which proxy counts and which extension set it, for example to apply it before extensions load; `restoreExtensionProxy()` hands back one the host kept itself under 1.x. |
+| `chrome.readingList`, `chrome.search` | `getSearchUrl` hook for the host's search engine. |
+| `chrome.scripting`, `chrome.userScripts` | userScripts is off until the host's `isUserScriptsAllowed` hook allows it for the extension, as Chrome's "Allow User Scripts" switch does; while off, `chrome.userScripts` is not there. Local files are reached only when the `isFileSchemeAccessAllowed` hook allows it, as Chrome's "Allow access to file URLs" does, whatever the extension's patterns say. |
+| `chrome.sessions` | Tabs and windows closed in this run. |
+| `chrome.sidePanel` | `openSidePanel` and `closeSidePanel` hooks. |
+| `chrome.system.cpu`, `.memory`, `.display`, `.storage` | |
+| `chrome.tabGroups` | `updateTabGroup` hook and `tab-group-*` events to show groups. |
+| `chrome.tabs`, `chrome.windows` | `createTab`, `selectTab`, `removeTab`, `createWindow`, `removeWindow`, `getTabIndex`, `moveTab`, `highlightTabs`, `pinTab` and `discardTab` hooks. |
+| `chrome.tts` | Speaks from a hidden page. |
+| `chrome.webNavigation`, `chrome.webRequest` | The host passes every request to the `notifyWebRequest*` methods, since Electron gives each `session.webRequest` event to one handler only. |
+
+Not supported: Chrome's sign-in (`identity.getAuthToken`), `chrome.gcm`, ChromeOS-only APIs, split view, and `chrome.dom` (Electron gives script no way to reach a closed shadow root).
+
+### For the host
+
+All hooks on the `ElectronChromeExtensions` options are optional; each has a safe default, documented in `src/browser/impl.ts`. Extension state (alarms, permissions, rules, settings, bookmarks, storage) is kept in the session's own folder, so two sessions never share it and an in-memory session never writes it to disk. Version 1.x kept it in one folder under userData; 2.0 reads that once.
 
 ### Development & testing
 
-From the `peersky-chrome-extensions` directory:
+From the repository root:
 
 ```bash
-yarn install
-yarn build
-yarn test
+npm ci
+npm run build
+npm test
 ```
 
 The test suite runs **Electron + Mocha** (see `spec/index.js`). It expects a dev install that includes `yargs` (listed in `devDependencies`).
 
-- **CI-equivalent run** (build + tests): `yarn test:ci`
-- **Native messaging tests** (`spec/chrome-nativeMessaging-spec.ts`) build a small SEA host under `script/native-messaging-host/`. That step can be slow or flaky on some Windows/CI machines. In GitHub Actions we set `SKIP_NATIVE_MESSAGING=1` so the rest of the suite stays green; to run those tests locally, omit that variable and use a machine where `node script/native-messaging-host/build.js <extensionId>` completes successfully.
-
-### Continuous integration
-
-The workflow `.github/workflows/peersky-chrome-extensions.yml` runs `yarn install --frozen-lockfile` and `yarn test:ci` on Ubuntu (with `xvfb-run`) and Windows when files under `peersky-chrome-extensions/` change.
+- **Build and test in one run**: `npm run test:ci`
+- **Against Chrome**: `PROBE_SUITES=tabs,windows PROBE_RESULTS_OUT=/tmp/shell.json npm test -- --files spec/chrome-api-parity-spec.ts` runs some of the probe suites, and `node script/probe-diff.js /tmp/shell.json tabs,windows` shows where the shell differs from Chrome. To record Chrome's answers again after changing a suite, run `CHROME=<Chrome for Testing binary> node script/chrome-parity.mjs --only=tabs` (branded Chrome no longer loads unpacked extensions from the command line). Chrome runs headless with a temporary profile.
+- **Native messaging tests** (`spec/chrome-nativeMessaging-spec.ts`) build a small SEA host under `script/native-messaging-host/`. That step can be slow or flaky on some machines: set `SKIP_NATIVE_MESSAGING=1` to run the rest of the suite without them, and run them on a machine where `node script/native-messaging-host/build.js <extensionId>` completes.
 
 ## Limitations
 
 ### `@p2plabs/peersky-chrome-extensions`
 
-- The latest version of Electron is recommended. `package.json` declares `peerDependencies.electron` as `>=35.0.0`.
-- All background scripts are persistent.
+- Electron 43 or later (`peerDependencies.electron` is `>=43.0.0`), which is what the tests run on.
+- Content scripts run on Electron's own bindings, which the shell cannot add to: `chrome.storage.sync` is not available in them.
 
 ### electron
 
-- Usage of Electron's `webRequest` API will prevent `chrome.webRequest` listeners from being called.
+- Electron gives each `session.webRequest` event to one handler only, so the host owns them and passes each request to the `notifyWebRequest*` methods; requests it does not pass on are never seen by `chrome.webRequest`, `declarativeNetRequest`, `chrome.privacy` or `chrome.contentSettings`.
 - Chrome extensions are not supported in non-persistent/incognito sessions.
 - `chrome.webNavigation.onDOMContentLoaded` is only emitted for the top frame until [support for iframes](https://github.com/electron/electron/issues/27344) is added.
 - Service worker preload scripts require Electron's sandbox to be enabled. This is the default behavior, but might be overridden by the `--no-sandbox` flag or `sandbox: false` in the `webPreferences` of a `BrowserWindow`. Check for the `--no-sandbox` flag using `ps -eaf | grep <appname>`.

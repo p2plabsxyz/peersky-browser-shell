@@ -1,0 +1,4 @@
+{
+  "extName": { "message": "Chrome API probe" },
+  "greeting": { "message": "Hello, $NAME$!", "placeholders": { "name": { "content": "$1" } } }
+}

@@ -1,5 +1,9 @@
 import { expect } from 'chai'
+import { app } from 'electron'
+import * as fs from 'node:fs'
 import * as http from 'http'
+import * as os from 'node:os'
+import * as path from 'node:path'
 import { AddressInfo } from 'net'
 
 import { useExtensionBrowser } from './hooks'
@@ -7,8 +11,14 @@ import { useExtensionBrowser } from './hooks'
 describe('chrome.downloads', () => {
   let server: http.Server
   let downloadUrl = ''
+  let downloads = ''
+  let previousDownloads = ''
 
   before(async () => {
+    // Downloads land in a folder of the test's own, never the person's.
+    previousDownloads = app.getPath('downloads')
+    downloads = fs.mkdtempSync(path.join(os.tmpdir(), 'crx-downloads-'))
+    app.setPath('downloads', downloads)
     server = http.createServer((req, res) => {
       if (req.url === '/file.txt') {
         const payload = 'downloads-test-file'
@@ -34,6 +44,8 @@ describe('chrome.downloads', () => {
 
   after(() => {
     server.close()
+    app.setPath('downloads', previousDownloads)
+    fs.rmSync(downloads, { recursive: true, force: true })
   })
 
   const browser = useExtensionBrowser({

@@ -1,17 +1,24 @@
 import { randomUUID } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { BrowserWindow, webContents } from 'electron'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
+import { app, BrowserWindow, webContents } from 'electron'
 import { ExtensionContext } from '../context'
 import { ExtensionEvent } from '../router'
 import { getExtensionManifest } from './common'
 import { NativeMessagingHost } from './lib/native-messaging-host'
+
+const INSTALLED_STATE_NS = 'installed'
 
 export class RuntimeAPI extends EventEmitter {
   private hostMap: Record<string, NativeMessagingHost | undefined> = {}
 
   constructor(
     private ctx: ExtensionContext,
-    private offscreen?: { getContexts(extensionId: string): any[] },
+    private offscreen?: {
+      getContexts(extensionId: string): any[]
+      isOffscreenDocument?(webContents: Electron.WebContents): boolean
+    },
   ) {
     super()
 
@@ -21,6 +28,9 @@ export class RuntimeAPI extends EventEmitter {
     handle('runtime.getContexts', this.getContexts)
     handle('runtime.openOptionsPage', this.openOptionsPage)
     handle('runtime.sendNativeMessage', this.sendNativeMessage, { permission: 'nativeMessaging' })
+    handle('runtime.requestUpdateCheck', this.requestUpdateCheck)
+    this.ctx.store.on('extension-enabling', (id: string) => this.enabling.add(id))
+    handle('extension.setUpdateUrlData', this.setUpdateUrlData)
     handle('extension.getViews', this.getViews)
     handle('extension.isAllowedFileSchemeAccess', this.isAllowedFileSchemeAccess)
     handle('extension.isAllowedIncognitoAccess', this.isAllowedIncognitoAccess)
@@ -46,14 +56,13 @@ export class RuntimeAPI extends EventEmitter {
       } catch {
         continue
       }
+      // Chrome calls the service worker the BACKGROUND context, with no
+      // document fields.
       contexts.push({
-        contextType: 'SERVICE_WORKER',
-        contextId: String(versionId),
+        contextType: 'BACKGROUND',
+        contextId: this.contextIdFor(`sw:${versionId}`),
         tabId: -1,
         windowId: -1,
-        documentId: undefined,
-        documentUrl: (info as any).scriptUrl,
-        documentOrigin: `chrome-extension://${extensionId}`,
         frameId: -1,
         incognito: false,
       })
@@ -96,7 +105,121 @@ export class RuntimeAPI extends EventEmitter {
     )
   }
 
-  private isAllowedFileSchemeAccess = () => false
+  private contextIds = new Map<string, string>()
+
+  /** Chrome's context ids are UUIDs that stay the same for the context's life. */
+  private contextIdFor(key: string) {
+    let id = this.contextIds.get(key)
+    if (!id) {
+      id = randomUUID()
+      this.contextIds.set(key, id)
+    }
+    return id
+  }
+
+  /**
+   * runtime.onInstalled and onStartup, as Chrome fires them: 'install' the
+   * first time an extension loads, 'update' when its version changed since,
+   * 'chrome_update' when the browser's did, and onStartup when it loads
+   * unchanged in a new run of the app. What was seen is kept in the state
+   * store, so a restart is told apart from an install.
+   */
+  async onExtensionLoaded(extension: Electron.Extension) {
+    const { stateStore, router } = this.ctx
+    await stateStore.whenHydrated()
+    const seen = stateStore.getNamespace<Record<string, { version: string; browser: string }>>(
+      INSTALLED_STATE_NS,
+      {},
+    )
+    const version = getExtensionManifest(extension).version || '0'
+    const browser = process.versions.chrome || ''
+    const before = seen[extension.id]
+    // 1.x kept no record of installs. On the first run after updating, an
+    // extension that already stored data was installed before: Chrome would
+    // call that a browser update, and a welcome page must not open again.
+    // Decided once per run, before this run's first record is written.
+    if (this.firstTracked === undefined) {
+      this.firstTracked = !stateStore.getNamespace<unknown>(INSTALLED_STATE_NS, undefined as any)
+    }
+    const firstTracked = this.firstTracked
+    let details: chrome.runtime.InstalledDetails | undefined
+    if (!before) {
+      const returning = firstTracked && (await this.hasStoredData(extension.id))
+      details = { reason: (returning ? 'chrome_update' : 'install') as chrome.runtime.OnInstalledReason }
+    } else if (before.version !== version) {
+      details = { reason: 'update' as chrome.runtime.OnInstalledReason, previousVersion: before.version }
+    } else if (before.browser !== browser) {
+      details = { reason: 'chrome_update' as chrome.runtime.OnInstalledReason }
+    }
+    if (!before || before.version !== version || before.browser !== browser) {
+      stateStore.setNamespace(INSTALLED_STATE_NS, { ...seen, [extension.id]: { version, browser } })
+      await stateStore.flush().catch(() => {})
+    }
+    const enabled = this.enabling.delete(extension.id)
+    if (details) {
+      router.sendEventWhenListening(extension.id, 'runtime.onInstalled', [details])
+      if (details.reason === 'install') this.ctx.store.emit('extension-installed', extension)
+    } else if (!this.startedThisRun.has(extension.id)) {
+      router.sendEventWhenListening(extension.id, 'runtime.onStartup', [])
+    }
+
+    // runtime.onExtensionLoaded (Chrome 157) on every load, with its reason;
+    // runtime.onEnabled (Chrome 155) when it comes back from disabled.
+    let loaded: { reason: string; previousVersion?: string }
+    if (details?.reason === 'install') loaded = { reason: 'install' }
+    else if (details?.reason === 'update') loaded = { reason: 'update', previousVersion: details.previousVersion }
+    else if (details?.reason === 'chrome_update') loaded = { reason: 'browser_update' }
+    // Chrome's docs give the current version as previousVersion for 'enable'.
+    else if (enabled) loaded = { reason: 'enable', previousVersion: version }
+    else if (!this.startedThisRun.has(extension.id)) loaded = { reason: 'startup' }
+    else loaded = { reason: 'reload' }
+    router.sendEventWhenListening(extension.id, 'runtime.onExtensionLoaded', [loaded])
+    if (enabled) router.sendEventWhenListening(extension.id, 'runtime.onEnabled', [])
+    this.startedThisRun.add(extension.id)
+  }
+
+  private startedThisRun = new Set<string>()
+  /** Extensions chrome.management is turning back on. */
+  private enabling = new Set<string>()
+  private firstTracked?: boolean
+
+  private async hasStoredData(extensionId: string) {
+    const storagePath = (this.ctx.session as any).storagePath as string | null | undefined
+    const candidates = [
+      storagePath && path.join(storagePath, 'extension-local', `${extensionId}.json`),
+      storagePath && path.join(storagePath, 'extension-sync', `${extensionId}.json`),
+      storagePath && path.join(storagePath, 'Local Extension Settings', extensionId),
+      storagePath && path.join(app.getPath('userData'), 'extension-local', `${extensionId}.json`),
+      storagePath && path.join(app.getPath('userData'), 'extension-sync', `${extensionId}.json`),
+    ].filter((c): c is string => !!c)
+    for (const candidate of candidates) {
+      try {
+        await fs.access(candidate)
+        return true
+      } catch {}
+    }
+    return false
+  }
+
+  private setUpdateUrlData = (_event: ExtensionEvent, data: unknown) => {
+    if (typeof data !== 'string') {
+      throw new Error('Error in invocation of extension.setUpdateUrlData(string data): No matching signature.')
+    }
+  }
+
+  /** Updates come from the host, if at all; the shell itself never has one. */
+  private requestUpdateCheck = () => ({ status: 'no_update', version: '' })
+
+  /** Only the host knows whether it loaded the extension with file access. */
+  private isAllowedFileSchemeAccess = ({ extension }: ExtensionEvent) => {
+    try {
+      return this.ctx.store.impl.isFileSchemeAccessAllowed?.(extension) === true
+    } catch {
+      return false
+    }
+  }
+
+  /** The shell never runs extensions in a private session's tabs. */
   private isAllowedIncognitoAccess = () => false
 
   private getViews = (
@@ -112,6 +235,8 @@ export class RuntimeAPI extends EventEmitter {
 
     const all = webContents.getAllWebContents().filter((wc) => {
       if (wc.isDestroyed() || wc.session !== this.ctx.session) return false
+      // An offscreen document is its own kind of context, never a view.
+      if (this.offscreen?.isOffscreenDocument?.(wc)) return false
       const rawUrl = wc.getURL?.()
       if (!rawUrl || !rawUrl.startsWith('chrome-extension://')) return false
       try {

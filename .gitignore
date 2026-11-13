@@ -35,3 +35,6 @@ logs/
 
 # Electron specific
 .webpack/
+
+# Chromium writes indexed rulesets into unpacked extensions it loads
+spec/fixtures/**/_metadata/

@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { promisify } from 'node:util'
 import * as cp from 'node:child_process'
 import * as path from 'node:path'
+import { app } from 'electron'
 const exec = promisify(cp.exec)
 
 import { useExtensionBrowser, useServer } from './hooks'
@@ -24,7 +25,8 @@ if (process.platform !== 'linux' && process.env.SKIP_NATIVE_MESSAGING !== '1') {
       const extensionId = await getExtensionId('rpc')
       const pkgRoot = path.join(__dirname, '..')
       const buildScript = path.join(pkgRoot, 'script', 'native-messaging-host', 'build.js')
-      await exec(`node "${buildScript}" ${extensionId}`, {
+      const userData = app.getPath('userData')
+      await exec(`node "${buildScript}" ${extensionId} "${userData}"`, {
         cwd: pkgRoot,
         maxBuffer: 20 * 1024 * 1024,
       })
