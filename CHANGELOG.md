@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-11-15 (@p2plabs/peersky-chrome-extensions)
+
+### Fixed
+
+- `action.setIcon` takes an icon the extension drew itself, as an `ImageData` or a dictionary of them. It crossed to the main process empty and every one was refused, so an extension that waits for its icon as it starts, VeePN among them, never started and its popup stayed on its loading screen.
+- A proxy's request for a login goes to the extension that set the proxy, even for a request with no page, such as one from the extension's own service worker. A VPN extension checks its connection that way, and with nobody to answer its proxy it never connected, so pages went on showing the real address. No other extension sees those requests.
+
 ## [2.0.0] - 2026-11-12 (@p2plabs/peersky-chrome-extensions)
 
 Versions of this fork follow their own numbers; the entries from 4.0.0 down are upstream electron-chrome-extensions.
