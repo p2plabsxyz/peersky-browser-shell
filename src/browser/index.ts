@@ -336,6 +336,9 @@ export class ElectronChromeExtensions extends EventEmitter {
             webContentsId: webContents?.id,
             timestamp: Date.now(),
             isProxy: authInfo.isProxy,
+            // A proxy's request for a login goes to the extension that set
+            // the proxy, even for a request the browser makes for itself.
+            proxyExtensionId: authInfo.isProxy ? this.api.proxy.getSettings()?.extensionId : undefined,
             scheme: authInfo.scheme,
             realm: authInfo.realm,
             challenger: {
