@@ -162,8 +162,6 @@ interface ElectronRequestDetails {
   error?: string
   ip?: string
   isProxy?: boolean
-  /** For a proxy's login: the extension that set the proxy. */
-  proxyExtensionId?: string
   scheme?: string
   realm?: string
   challenger?: {
@@ -193,6 +191,8 @@ export class WebRequestAPI {
   /** Server addresses Electron reported on a redirect, by request id. */
   private requestIps = new Map<string, string>()
   private watchedSenders = new WeakSet<object>()
+  /** The extension whose proxy the session uses now, if one set it. */
+  private proxyOwner: () => string | undefined = () => undefined
 
   constructor(
     private ctx: ExtensionContext,
@@ -1009,11 +1009,16 @@ export class WebRequestAPI {
     if (raw.id != null) this.requestIps.delete(String(raw.id))
   }
 
+  /** Tells which extension's proxy the session uses, for its logins. */
+  setProxyOwner(owner: () => string | undefined) {
+    this.proxyOwner = owner
+  }
+
   async notifyOnAuthRequired(
     details: ElectronRequestDetails,
   ): Promise<{ cancel?: boolean; authCredentials?: { username: string; password: string } }> {
     if (!details?.url) return {}
-    const proxyOwner = details.isProxy ? details.proxyExtensionId : undefined
+    const proxyOwner = details.isProxy ? this.proxyOwner() : undefined
     return this.dispatch(
       'onAuthRequired',
       this.buildDetails(details),

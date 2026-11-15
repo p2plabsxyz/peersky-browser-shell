@@ -309,6 +309,10 @@ export class ElectronChromeExtensions extends EventEmitter {
       webNavigation: new WebNavigationAPI(this.ctx),
       windows: new WindowsAPI(this.ctx),
     }
+    // A proxy's request for a login, with no page to tell whose it is, goes
+    // to the extension that set the proxy: when Chromium asks, and when the
+    // host asks for a connection of its own, a torrent's or the updater's.
+    this.api.webRequest.setProxyOwner(() => this.api.proxy.getSettings()?.extensionId)
 
     // Must come first: listenForExtensions() starts background service workers,
     // and a worker started before the preload is registered never receives the
@@ -336,9 +340,6 @@ export class ElectronChromeExtensions extends EventEmitter {
             webContentsId: webContents?.id,
             timestamp: Date.now(),
             isProxy: authInfo.isProxy,
-            // A proxy's request for a login goes to the extension that set
-            // the proxy, even for a request the browser makes for itself.
-            proxyExtensionId: authInfo.isProxy ? this.api.proxy.getSettings()?.extensionId : undefined,
             scheme: authInfo.scheme,
             realm: authInfo.realm,
             challenger: {

@@ -174,23 +174,28 @@ describe('network and page APIs', () => {
       expect(seen).to.deep.equal(['xmlhttprequest', 'main_frame'])
     })
 
-    // A VPN extension checks its connection from its service worker, with no
-    // page and no origin, so its proxy's request for a login went to nobody,
-    // and the extension never connected.
+    // A VPN extension checks its connection from its service worker, and the
+    // host asks for a login of its own for a torrent or the updater: neither
+    // has a page or an origin, so the proxy's request for a login went to
+    // nobody, the extension never connected, and torrents got nowhere.
     it('gives a proxy\'s request for a login with no page to the extension that set the proxy, and no other', async () => {
       const vpn = extension('wr-vpn', { permissions: ['webRequest', 'webRequestAuthProvider'], host_permissions: ['<all_urls>'] })
       const other = extension('wr-other', { permissions: ['webRequest', 'webRequestAuthProvider'], host_permissions: ['<all_urls>'] })
       const h = makeCtx({ extensions: [vpn, other] })
       const api = new WebRequestAPI(h.ctx)
+      let owner: string | undefined = 'wr-vpn'
+      api.setProxyOwner(() => owner)
       await h.call('webRequest.addOnAuthRequiredListener', vpn, { urls: ['<all_urls>'] }, [])
       await h.call('webRequest.addOnAuthRequiredListener', other, { urls: ['<all_urls>'] }, [])
       const challenge = (extra: any) =>
         api.notifyOnAuthRequired(
           request({ url: 'https://check.example/', isProxy: true, scheme: 'basic', challenger: { host: 'proxy.example', port: 443 }, ...extra }),
         )
-      await challenge({ proxyExtensionId: 'wr-vpn' })
-      // A site's own sign-in, and a proxy no extension set, stay out of sight.
-      await challenge({ isProxy: false, proxyExtensionId: 'wr-vpn' })
+      await challenge({})
+      // A site's own sign-in stays out of sight, and so does a proxy no
+      // extension set.
+      await challenge({ isProxy: false })
+      owner = undefined
       await challenge({})
       const seen = h.events.filter((e) => e.name === 'webRequest.onAuthRequired')
       expect(seen.map((e) => e.extensionId)).to.deep.equal(['wr-vpn'])
