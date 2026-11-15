@@ -473,6 +473,28 @@ describe('tabCapture and declarativeContent in a real session', function () {
     expect(store.getDeclarativeAction(PROBE_ID, tab.id)).to.equal(undefined)
   })
 
+  // Across the bridge an ImageData arrived as an empty object, so an icon an
+  // extension drew itself was always refused, and VeePN, which waits for its
+  // icon as it starts, never started.
+  it('sets the action icon from ImageData the extension drew, in one size or several', async () => {
+    const answers = await page.webContents.executeJavaScript(`(async () => {
+      const drawn = (side) => {
+        const image = new ImageData(side, side)
+        for (let i = 0; i < image.data.length; i += 4) image.data.set([0, 128, 0, 255], i)
+        return image
+      }
+      const answers = []
+      for (const imageData of [drawn(2), { 16: drawn(16), 32: drawn(32) }]) {
+        answers.push(await chrome.action.setIcon({ imageData }).then(() => 'ok', (error) => error.message))
+      }
+      return answers
+    })()`)
+    expect(answers).to.deep.equal(['ok', 'ok'])
+    const icon = (browser.extensions as any).api.browserAction.actionMap.get(PROBE_ID).icon
+    expect(Object.keys(icon.imageData)).to.deep.equal(['16', '32'])
+    for (const url of Object.values(icon.imageData)) expect(url).to.match(/^data:image\/png;base64,/)
+  })
+
   it('opens the stream itself with capture() in an extension page', async () => {
     const result = await page.webContents.executeJavaScript(`new Promise((resolve) => {
       chrome.tabCapture.capture({ video: true }, (stream) => {

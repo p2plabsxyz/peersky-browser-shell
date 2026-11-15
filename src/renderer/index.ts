@@ -198,7 +198,13 @@ export const injectExtensionAPIs = () => {
       (fnName: string, opts: ExtensionMessageOptions = {}) =>
         (...args: any[]) => {
           const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
-          const promise = electron.invokeExtension(extensionId, fnName, opts, ...args)
+          // Serialized here, in the extension's own world. Across the bridge an
+          // ImageData arrives as an empty object, so action.setIcon refused
+          // every icon an extension drew itself, and an extension that waits
+          // for that, as VeePN does as it starts, never started.
+          const { serialize, ...bridgeOptions } = opts
+          if (serialize) args = serialize(...args)
+          const promise = electron.invokeExtension(extensionId, fnName, bridgeOptions, ...args)
           if (!callback) return promise
           promise.then(
             (result: unknown) => runCallback(callback, undefined, result),

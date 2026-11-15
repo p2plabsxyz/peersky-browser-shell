@@ -191,6 +191,8 @@ export class WebRequestAPI {
   /** Server addresses Electron reported on a redirect, by request id. */
   private requestIps = new Map<string, string>()
   private watchedSenders = new WeakSet<object>()
+  /** The extension whose proxy the session uses now, if one set it. */
+  private proxyOwner: () => string | undefined = () => undefined
 
   constructor(
     private ctx: ExtensionContext,
@@ -806,9 +808,12 @@ export class WebRequestAPI {
    * and, unless it is a top-level navigation, to the origin that made it.
    * That keeps other extensions' requests and those of browser pages out of
    * sight. Requests the browser makes for itself have neither a page nor an
-   * origin, and are not shown at all.
+   * origin, and are not shown at all, but for one thing: a proxy's request for
+   * a login goes to the extension that set the proxy, proxyOwner. A VPN
+   * extension's own checks come from its service worker, with no page, and
+   * without its login they failed, so it never connected.
    */
-  private visibleTo(extensionId: string, info: WebRequestDetails) {
+  private visibleTo(extensionId: string, info: WebRequestDetails, proxyOwner?: string) {
     const sessionExtensions = this.ctx.session.extensions || this.ctx.session
     const extension = sessionExtensions.getExtension?.(extensionId)
     const permissions = this.ctx.permissions
@@ -819,7 +824,7 @@ export class WebRequestAPI {
     const navigation = info.type === 'main_frame'
     if (!navigation) {
       if (!info.initiator) {
-        if (info.tabId < 0 && !info.frameType) return false
+        if (info.tabId < 0 && !info.frameType && extensionId !== proxyOwner) return false
       } else if (info.initiator !== 'null') {
         if (!permissions.hasHostAccess(extension, info.initiator + '/', { tabId })) return false
       }
@@ -827,13 +832,13 @@ export class WebRequestAPI {
     return true
   }
 
-  private findMatchingListeners(name: EventName, details: WebRequestDetails): ListenerEntry[] {
+  private findMatchingListeners(name: EventName, details: WebRequestDetails, proxyOwner?: string): ListenerEntry[] {
     const visible = new Map<string, boolean>()
     return this.list(name).filter((entry) => {
       if (!this.listenerMatchesRequest(details, entry.filter)) return false
       let ok = visible.get(entry.extensionId)
       if (ok === undefined) {
-        ok = this.visibleTo(entry.extensionId, details)
+        ok = this.visibleTo(entry.extensionId, details, proxyOwner)
         visible.set(entry.extensionId, ok)
       }
       return ok
@@ -888,8 +893,9 @@ export class WebRequestAPI {
     event: EventName,
     info: WebRequestDetails,
     merge?: (results: Map<string, any>) => T,
+    proxyOwner?: string,
   ): Promise<T | {}> {
-    const matching = this.findMatchingListeners(event, info)
+    const matching = this.findMatchingListeners(event, info, proxyOwner)
     if (matching.length === 0) return Promise.resolve({})
     const requestId = info.requestId || `wr-${++this.requestIdCounter}`
     const payload = { ...info, requestId }
@@ -1003,12 +1009,21 @@ export class WebRequestAPI {
     if (raw.id != null) this.requestIps.delete(String(raw.id))
   }
 
+  /** Tells which extension's proxy the session uses, for its logins. */
+  setProxyOwner(owner: () => string | undefined) {
+    this.proxyOwner = owner
+  }
+
   async notifyOnAuthRequired(
     details: ElectronRequestDetails,
   ): Promise<{ cancel?: boolean; authCredentials?: { username: string; password: string } }> {
     if (!details?.url) return {}
-    return this.dispatch('onAuthRequired', this.buildDetails(details), (results) =>
-      this.mergeAuthRequired(results as Map<string, WebRequestBlockingResponse>),
+    const proxyOwner = details.isProxy ? this.proxyOwner() : undefined
+    return this.dispatch(
+      'onAuthRequired',
+      this.buildDetails(details),
+      (results) => this.mergeAuthRequired(results as Map<string, WebRequestBlockingResponse>),
+      proxyOwner,
     ) as any
   }
 }
